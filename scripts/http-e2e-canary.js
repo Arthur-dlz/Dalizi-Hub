@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createDispatcherFromEnvironment } from "../src/mcp-server.js";
 import { HTTP_MCP_PORT, startHttpMcpServer } from "../src/http-mcp-server.js";
@@ -11,6 +12,8 @@ import { CODEBUDDY_SCRIPT } from "../src/workbuddy-runner.js";
 
 const execFile = promisify(execFileCallback);
 const preferredModel = "custom-local:step-3.7-flash";
+const registerScriptPath = fileURLToPath(new URL("./register-project.js", import.meta.url));
+const canaryAlias = "registry-canary";
 let currentStage = "startup";
 let failureClass = "not_classified";
 
@@ -89,8 +92,9 @@ async function main() {
     const environment = {
       ...process.env,
       DISPATCHER_DATA_DIR: path.join(root, "jobs"),
-      DISPATCHER_PROJECT_REGISTRY: JSON.stringify({ "canary-project": root }),
     };
+    currentStage = "register_temporary_project";
+    await execFile(process.execPath, [registerScriptPath, "--alias", canaryAlias, "--cwd", root], { env: environment, windowsHide: true });
     currentStage = "start_loopback_http_mcp";
     server = await startHttpMcpServer({ dispatcher: createDispatcherFromEnvironment(environment), bearerToken: token, port: HTTP_MCP_PORT });
     const endpoint = new URL(`http://127.0.0.1:${HTTP_MCP_PORT}/mcp`);
@@ -107,7 +111,7 @@ async function main() {
       name: "dispatch_task",
       arguments: {
         agent: "workbuddy",
-        project: "canary-project",
+        project: canaryAlias,
         model,
         effort: "high",
         task: "只读 PROJECT_MARKER，并仅返回标记的完整内容；不得修改文件。",
@@ -134,7 +138,12 @@ async function main() {
 
     await client.close();
     client = undefined;
-    currentStage = "reconnect_and_verify_persistence";
+    await closeServer(server);
+    server = undefined;
+    currentStage = "restart_and_verify_registry_and_persistence";
+    const restartedDispatcher = createDispatcherFromEnvironment(environment);
+    if (restartedDispatcher.registry.resolve(canaryAlias) !== root) throw new Error("registered project did not resolve after Dispatcher restart");
+    server = await startHttpMcpServer({ dispatcher: restartedDispatcher, bearerToken: token, port: HTTP_MCP_PORT });
     secondClient = await connect();
     const recovered = toolJson(await secondClient.callTool({ name: "get_task", arguments: { job_id: receipt.job_id } }));
     if (JSON.stringify(recovered) !== JSON.stringify(completed)) {
@@ -142,7 +151,7 @@ async function main() {
       throw new Error("HTTP canary job was not persisted after a new client connection");
     }
 
-    console.log(JSON.stringify({ job_id: receipt.job_id, state_sequence: [receipt.status, completed.status], persisted_after_reconnect: true, bind_address: "127.0.0.1", port: HTTP_MCP_PORT }));
+    console.log(JSON.stringify({ job_id: receipt.job_id, project: canaryAlias, state_sequence: [receipt.status, completed.status], project_marker_match: true, registry_resolved_after_restart: true, persisted_after_restart: true, bind_address: "127.0.0.1", port: HTTP_MCP_PORT }));
   } finally {
     await secondClient?.close();
     await client?.close();

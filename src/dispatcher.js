@@ -19,7 +19,7 @@ export class Dispatcher {
   async dispatch(input) {
     if (this.activeJobId) throw new DispatcherError("dispatcher_busy", "only one WorkBuddy job may run at a time");
     const validated = validateDispatchInput(input, this.allowedModels);
-    const cwd = resolveProject(validated.project, this.registry);
+    const cwd = await resolveProject(validated.project, this.registry);
     const jobId = randomUUID();
     this.activeJobId = jobId;
     try {

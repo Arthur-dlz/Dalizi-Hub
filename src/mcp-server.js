@@ -6,6 +6,7 @@ import * as z from "zod/v4";
 import { Dispatcher } from "./dispatcher.js";
 import { DispatcherError } from "./contracts.js";
 import { JobStore } from "./job-store.js";
+import { ProjectRegistry, projectRegistryPath } from "./project-registry.js";
 import { WorkBuddyRunner } from "./workbuddy-runner.js";
 
 const VERIFIED_MODELS = new Set(["custom-local:step-3.7-flash"]);
@@ -20,29 +21,13 @@ function successResult(value) {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-export function loadRegistry(raw) {
-  if (!raw) return {};
-  let registry;
-  try {
-    registry = JSON.parse(raw);
-  } catch {
-    throw new DispatcherError("invalid_registry", "DISPATCHER_PROJECT_REGISTRY must be JSON");
-  }
-  if (!registry || typeof registry !== "object" || Array.isArray(registry)) {
-    throw new DispatcherError("invalid_registry", "DISPATCHER_PROJECT_REGISTRY must be an object");
-  }
-  for (const [alias, cwd] of Object.entries(registry)) {
-    if (alias !== "canary-project" || typeof cwd !== "string" || !path.isAbsolute(cwd)) {
-      throw new DispatcherError("invalid_registry", "registry aliases and paths are invalid");
-    }
-  }
-  return registry;
-}
-
 export function createDispatcherFromEnvironment(environment = process.env) {
+  if (environment.DISPATCHER_PROJECT_REGISTRY !== undefined) {
+    throw new DispatcherError("invalid_registry", "DISPATCHER_PROJECT_REGISTRY is not supported; use the local project registry file");
+  }
   const dataDirectory = environment.DISPATCHER_DATA_DIR || path.join(process.cwd(), ".dispatcher-data");
   return new Dispatcher({
-    registry: loadRegistry(environment.DISPATCHER_PROJECT_REGISTRY),
+    registry: new ProjectRegistry(projectRegistryPath(dataDirectory)),
     allowedModels: VERIFIED_MODELS,
     store: new JobStore(dataDirectory),
     runner: new WorkBuddyRunner(),

@@ -21,13 +21,19 @@ It only dispatches a single owned WorkBuddy `codebuddy -p` child at a time.
 ## Commands
 
 `npm test` runs focused unit and MCP-client integration tests. `npm run canary`
-runs the one-off WorkBuddy canary after its temporary project registry is set.
+runs the one-off WorkBuddy canary after it locally registers a temporary project.
 
-To start the local stdio server, its operator supplies the explicit registry and
-data directory, for example: `DISPATCHER_PROJECT_REGISTRY` with only approved
-aliases and `DISPATCHER_DATA_DIR` for the JSON job files, then `npm start`.
-The V0 model allowlist contains the dynamically verified
-`custom-local:step-3.7-flash` only.
+The trusted local operator registers a project before dispatching to it:
+
+```powershell
+npm run register-project -- --alias my-project --cwd D:\trusted\project
+```
+
+The registry is persisted as `.dispatcher-data/project-registry.json` by default
+(or beneath `DISPATCHER_DATA_DIR` when set) and is reloaded for every dispatch.
+It is gitignored; do not commit local paths. MCP exposes no registry-mutation
+tool and accepts only the alias. The V0 model allowlist contains the dynamically
+verified `custom-local:step-3.7-flash` only.
 
 ## Boundaries
 

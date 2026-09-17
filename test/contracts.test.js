@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateDispatchInput, resolveProject } from "../src/contracts.js";
+import { DispatcherError, validateDispatchInput, resolveProject } from "../src/contracts.js";
 
 test("only the workbuddy agent and a registered alias are accepted", () => {
   assert.throws(
@@ -8,7 +8,7 @@ test("only the workbuddy agent and a registered alias are accepted", () => {
     { code: "unsupported_agent" },
   );
   assert.throws(
-    () => resolveProject("unknown", { "canary-project": "C:/safe" }),
+    () => resolveProject("unknown", { resolve() { throw new DispatcherError("unknown_project", "project is not registered"); } }),
     { code: "unknown_project" },
   );
 });

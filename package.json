@@ -8,6 +8,7 @@
     "start": "node src/mcp-server.js",
     "start:http": "node src/http-mcp-server.js",
     "canary": "node scripts/e2e-canary.js",
+    "register-project": "node scripts/register-project.js",
     "canary:http": "node scripts/http-e2e-canary.js"
   },
   "keywords": [],

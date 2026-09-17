@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { Dispatcher } from "../src/dispatcher.js";
+import { DispatcherError } from "../src/contracts.js";
 import { startHttpMcpServer } from "../src/http-mcp-server.js";
 import { JobStore } from "../src/job-store.js";
 
@@ -41,7 +42,7 @@ test("the loopback HTTP MCP endpoint requires Bearer auth and shares Dispatcher 
   const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-http-mcp-"));
   const token = randomBytes(32).toString("base64url");
   const dispatcher = new Dispatcher({
-    registry: { "canary-project": directory },
+    registry: { resolve(project) { if (project !== "canary-project") throw new DispatcherError("unknown_project", "project is not registered"); return directory; } },
     allowedModels: new Set(["custom-local:step-3.7-flash"]),
     store: new JobStore(path.join(directory, "jobs")),
     runner: createRunner(),
@@ -69,6 +70,8 @@ test("the loopback HTTP MCP endpoint requires Bearer auth and shares Dispatcher 
     await client.connect(clientTransport);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ["dispatch_task", "get_task"]);
+    const dispatchTool = tools.tools.find((tool) => tool.name === "dispatch_task");
+    assert.doesNotMatch(JSON.stringify(dispatchTool), /"(?:cwd|path|executable|command)"/);
 
     const receipt = toolJson(await client.callTool({
       name: "dispatch_task",

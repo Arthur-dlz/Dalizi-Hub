@@ -1,5 +1,3 @@
-import path from "node:path";
-
 export const EFFORT_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 
 export class DispatcherError extends Error {
@@ -39,15 +37,8 @@ export function validateDispatchInput(input, allowedModels) {
 }
 
 export function resolveProject(project, registry) {
-  if (!registry || typeof registry !== "object" || Array.isArray(registry)) {
-    throw new DispatcherError("invalid_registry", "project registry must be an object");
+  if (!registry || typeof registry.resolve !== "function") {
+    throw new DispatcherError("invalid_registry", "project registry must provide a resolver");
   }
-  if (!Object.hasOwn(registry, project)) {
-    throw new DispatcherError("unknown_project", "project is not registered");
-  }
-  const cwd = registry[project];
-  if (typeof cwd !== "string" || !path.isAbsolute(cwd)) {
-    throw new DispatcherError("invalid_registry", "registered project path must be absolute");
-  }
-  return cwd;
+  return registry.resolve(project);
 }

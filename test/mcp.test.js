@@ -6,13 +6,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { loadRegistry } from "../src/mcp-server.js";
+import { createDispatcherFromEnvironment } from "../src/mcp-server.js";
+import { projectRegistryPath, registerProject } from "../src/project-registry.js";
 
 const serverPath = fileURLToPath(new URL("../src/mcp-server.js", import.meta.url));
 
-test("V0 registry rejects aliases other than the temporary canary", () => {
+test("the removed inline registry configuration fails closed", () => {
   assert.throws(
-    () => loadRegistry(JSON.stringify({ "formal-project": "C:/not-allowed" })),
+    () => createDispatcherFromEnvironment({ DISPATCHER_PROJECT_REGISTRY: JSON.stringify({ "canary-project": "C:/not-allowed" }) }),
     { code: "invalid_registry" },
   );
 });
@@ -21,15 +22,19 @@ test("the stdio MCP server exposes only two tools and fails closed", async () =>
   const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-mcp-"));
   const client = new Client({ name: "dalizi-test-client", version: "0.0.0" });
   try {
+    const dataDirectory = path.join(directory, "jobs");
+    await registerProject({ registryFile: projectRegistryPath(dataDirectory), alias: "canary-project", cwd: directory });
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [serverPath],
-      env: { ...process.env, DISPATCHER_DATA_DIR: path.join(directory, "jobs"), DISPATCHER_PROJECT_REGISTRY: JSON.stringify({ "canary-project": directory }) },
+      env: { ...process.env, DISPATCHER_DATA_DIR: dataDirectory },
       stderr: "pipe",
     });
     await client.connect(transport);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ["dispatch_task", "get_task"]);
+    const dispatchTool = tools.tools.find((tool) => tool.name === "dispatch_task");
+    assert.doesNotMatch(JSON.stringify(dispatchTool), /"(?:cwd|path|executable|command)"/);
 
     const unsupported = await client.callTool({ name: "dispatch_task", arguments: { agent: "codex", project: "canary-project", task: "read", model: "custom-local:step-3.7-flash" } });
     assert.equal(unsupported.isError, true);

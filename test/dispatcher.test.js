@@ -11,7 +11,7 @@ test("dispatch persists a completed WorkBuddy result", async () => {
   try {
     const calls = [];
     const dispatcher = new Dispatcher({
-      registry: { "canary-project": directory },
+      registry: { resolve(project) { if (project !== "canary-project") throw new Error("unexpected project"); return directory; } },
       allowedModels: new Set(["custom-local:step-3.7-flash"]),
       store: new JobStore(path.join(directory, "jobs")),
       runner: { async run(input) { calls.push(input); return { pid: 4321, status: "COMPLETED", finalText: "PROJECT_MARKER=violet", error: null, actualModel: "NOT_OBSERVABLE" }; } },

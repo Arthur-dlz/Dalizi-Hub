@@ -12,7 +12,9 @@ import { CODEBUDDY_SCRIPT } from "../src/workbuddy-runner.js";
 
 const execFile = promisify(execFileCallback);
 const serverPath = fileURLToPath(new URL("../src/mcp-server.js", import.meta.url));
+const registerScriptPath = fileURLToPath(new URL("./register-project.js", import.meta.url));
 const preferredModel = "custom-local:step-3.7-flash";
+const canaryAlias = "registry-canary";
 const marker = `PROJECT_MARKER=${randomUUID()}`;
 const root = await mkdtemp(path.join(os.tmpdir(), "dalizi-dispatcher-canary-"));
 let firstClient;
@@ -33,7 +35,6 @@ function environment() {
   return {
     ...process.env,
     DISPATCHER_DATA_DIR: path.join(root, "jobs"),
-    DISPATCHER_PROJECT_REGISTRY: JSON.stringify({ "canary-project": root }),
   };
 }
 
@@ -84,13 +85,14 @@ async function removeCanaryDirectory() {
 try {
   await execFile("git", ["init"], { cwd: root, windowsHide: true });
   await writeFile(path.join(root, "PROJECT_MARKER"), `${marker}\n`, "utf8");
+  await execFile(process.execPath, [registerScriptPath, "--alias", canaryAlias, "--cwd", root], { env: environment(), windowsHide: true });
 
   firstClient = await connect();
   const receipt = toolJson(await firstClient.callTool({
     name: "dispatch_task",
     arguments: {
       agent: "workbuddy",
-      project: "canary-project",
+      project: canaryAlias,
       model,
       effort: "high",
       task: "只读 PROJECT_MARKER，并仅返回标记的完整内容；不得修改文件。",
@@ -118,7 +120,7 @@ try {
   const recovered = toolJson(await secondClient.callTool({ name: "get_task", arguments: { job_id: receipt.job_id } }));
   assert.deepEqual(recovered, completed);
 
-  console.log(JSON.stringify({ job_id: receipt.job_id, state_sequence: [receipt.status, completed.status], final_text: completed.final_text, requested_model: completed.requested_model, actual_model: completed.actual_model, persisted_after_restart: true }));
+  console.log(JSON.stringify({ job_id: receipt.job_id, project: canaryAlias, state_sequence: [receipt.status, completed.status], project_marker_match: true, requested_model: completed.requested_model, actual_model: completed.actual_model, persisted_after_restart: true }));
 } finally {
   await secondClient?.close();
   await firstClient?.close();
