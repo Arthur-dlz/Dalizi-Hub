@@ -1,0 +1,19 @@
+{
+  "name": "dalizi-dispatcher",
+  "version": "1.0.0",
+  "description": "Minimal local MCP dispatcher for WorkBuddy canary jobs",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/mcp-server.js",
+    "canary": "node scripts/e2e-canary.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.6.5"
+  }
+}

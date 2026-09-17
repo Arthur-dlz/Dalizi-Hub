@@ -1,0 +1,45 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { loadRegistry } from "../src/mcp-server.js";
+
+const serverPath = fileURLToPath(new URL("../src/mcp-server.js", import.meta.url));
+
+test("V0 registry rejects aliases other than the temporary canary", () => {
+  assert.throws(
+    () => loadRegistry(JSON.stringify({ "formal-project": "C:/not-allowed" })),
+    { code: "invalid_registry" },
+  );
+});
+
+test("the stdio MCP server exposes only two tools and fails closed", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-mcp-"));
+  const client = new Client({ name: "dalizi-test-client", version: "0.0.0" });
+  try {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [serverPath],
+      env: { ...process.env, DISPATCHER_DATA_DIR: path.join(directory, "jobs"), DISPATCHER_PROJECT_REGISTRY: JSON.stringify({ "canary-project": directory }) },
+      stderr: "pipe",
+    });
+    await client.connect(transport);
+    const tools = await client.listTools();
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ["dispatch_task", "get_task"]);
+
+    const unsupported = await client.callTool({ name: "dispatch_task", arguments: { agent: "codex", project: "canary-project", task: "read", model: "custom-local:step-3.7-flash" } });
+    assert.equal(unsupported.isError, true);
+    assert.match(unsupported.content[0].text, /unsupported_agent/);
+
+    const unknown = await client.callTool({ name: "dispatch_task", arguments: { agent: "workbuddy", project: "unknown", task: "read", model: "custom-local:step-3.7-flash" } });
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.content[0].text, /unknown_project/);
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
