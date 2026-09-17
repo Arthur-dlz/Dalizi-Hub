@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node --test",
     "start": "node src/mcp-server.js",
-    "canary": "node scripts/e2e-canary.js"
+    "start:http": "node src/http-mcp-server.js",
+    "canary": "node scripts/e2e-canary.js",
+    "canary:http": "node scripts/http-e2e-canary.js"
   },
   "keywords": [],
   "author": "",

@@ -31,5 +31,20 @@ The V0 model allowlist contains the dynamically verified
 
 ## Boundaries
 
-No HTTP transport, tunnel, cancel, Codex, ZCode, skill handling, arbitrary cwd,
+No tunnel, cancel, Codex, ZCode, skill handling, arbitrary cwd,
 arbitrary executables, or secret/token storage reads are implemented.
+
+## Local Streamable HTTP MCP
+
+The stdio transport remains available through `npm start`. The independent HTTP
+transport listens only at `http://127.0.0.1:18490/mcp` and requires a dedicated
+credential in `DISPATCHER_HTTP_BEARER_TOKEN` (at least 32 characters):
+
+```powershell
+$env:DISPATCHER_HTTP_BEARER_TOKEN = "set-a-new-dedicated-credential-outside-the-repository"
+npm run start:http
+```
+
+Clients send `Authorization: Bearer <token>`. Requests without a valid token or
+with a foreign Origin are rejected before they reach MCP. The HTTP entry never
+reads `CONTROL_PLANE_API_KEY`, WorkBuddy credentials, cookies, or storage.
