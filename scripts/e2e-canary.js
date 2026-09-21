@@ -60,6 +60,22 @@ function childHasExited(pid) {
   }
 }
 
+function diagnosticReport(job) {
+  const diagnostics = job.diagnostics ?? {};
+  return {
+    CODEBUDDY_EXIT_CODE: diagnostics.process_exit_code ?? null,
+    STDERR_PRESENT: diagnostics.stderr_present === true ? "YES" : "NO",
+    EVENT_TYPES: diagnostics.event_types ?? [],
+    TERMINAL_RESULT_SEEN: diagnostics.terminal_result_seen === true ? "YES" : "NO",
+    TERMINAL_SUBTYPE: diagnostics.terminal_subtype ?? null,
+    TERMINAL_IS_ERROR: diagnostics.terminal_is_error ?? null,
+    RESULT_FIELD_PRESENT: diagnostics.result_field_present === true ? "YES" : "NO",
+    ERRORS_PRESENT: diagnostics.errors_present === true ? "YES" : "NO",
+    ERROR_CATEGORY: diagnostics.error_category ?? null,
+    SAFE_ERROR_SUMMARY: diagnostics.safe_error_summary ?? null,
+  };
+}
+
 async function removeCanaryDirectory() {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -95,7 +111,11 @@ try {
   assert.ok(["QUEUED", "RUNNING"].includes(receipt.status));
 
   const completed = await waitForCompleted(firstClient, receipt.job_id);
-  assert.equal(completed.status, "COMPLETED", completed.error);
+  if (completed.status !== "COMPLETED") {
+    childExitVerified = typeof completed.pid === "number" && childHasExited(completed.pid);
+    console.log(JSON.stringify({ workbuddy_diagnostic: diagnosticReport(completed) }));
+    throw new Error(completed.error ?? "WorkBuddy canary failed");
+  }
   assert.equal(typeof completed.final_text, "string");
   assert.ok(completed.final_text.length > 0);
   assert.match(completed.final_text, new RegExp(marker));
@@ -112,7 +132,7 @@ try {
   const recovered = toolJson(await secondClient.callTool({ name: "get_task", arguments: { job_id: receipt.job_id } }));
   assert.deepEqual(recovered, completed);
 
-  console.log(JSON.stringify({ job_id: receipt.job_id, project: canaryAlias, state_sequence: [receipt.status, completed.status], project_marker_match: true, requested_model: completed.requested_model, actual_model: completed.actual_model, persisted_after_restart: true }));
+  console.log(JSON.stringify({ job_id: receipt.job_id, project: canaryAlias, state_sequence: [receipt.status, completed.status], project_marker_match: true, requested_model: completed.requested_model, actual_model: completed.actual_model, persisted_after_restart: true, workbuddy_diagnostic: diagnosticReport(completed) }));
 } finally {
   await secondClient?.close();
   await firstClient?.close();

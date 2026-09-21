@@ -67,6 +67,7 @@ export class Dispatcher {
         actual_model: run.actualModel ?? "NOT_OBSERVABLE",
         final_text: run.finalText,
         error: run.error,
+        diagnostics: run.diagnostics ?? null,
         finished_at: now(),
       });
     } catch (error) {

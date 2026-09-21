@@ -10,7 +10,7 @@ test("runner resolves the explicit CLI override and preserves Node argv routing"
   const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-runner-"));
   try {
     const script = path.join(directory, "fake-codebuddy.js");
-    await writeFile(script, "console.log(JSON.stringify({type:'result',result:'override-ok'}));", "utf8");
+    await writeFile(script, "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'override-ok'}));", "utf8");
     let spawned;
     const runner = new WorkBuddyRunner({
       environment: { WORKBUDDY_CLI_PATH: script },
@@ -63,7 +63,7 @@ test("runner waits for owned PID persistence before returning a final result", a
   const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-runner-"));
   try {
     const script = path.join(directory, "fake-codebuddy.js");
-    await writeFile(script, "console.log(JSON.stringify({type:'result',result:'ok'}));", "utf8");
+    await writeFile(script, "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'ok'}));", "utf8");
     let persisted = false;
     const run = await new WorkBuddyRunner({ codebuddyScript: script }).run({
       cwd: directory,

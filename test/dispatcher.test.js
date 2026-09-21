@@ -14,7 +14,7 @@ test("dispatch persists a completed WorkBuddy result", async () => {
       registry: { resolve(project) { if (project !== "canary-project") throw new Error("unexpected project"); return directory; } },
       allowedModels: new Set(["custom-local:step-3.7-flash"]),
       store: new JobStore(path.join(directory, "jobs")),
-      runner: { async run(input) { calls.push(input); return { pid: 4321, status: "COMPLETED", finalText: "PROJECT_MARKER=violet", error: null, actualModel: "NOT_OBSERVABLE" }; } },
+      runner: { async run(input) { calls.push(input); return { pid: 4321, status: "COMPLETED", finalText: "PROJECT_MARKER=violet", error: null, actualModel: "NOT_OBSERVABLE", diagnostics: { process_exit_code: 0, stderr_present: false } }; } },
     });
 
     const receipt = await dispatcher.dispatch({ agent: "workbuddy", project: "canary-project", task: "read marker", model: "custom-local:step-3.7-flash", effort: "high" });
@@ -23,6 +23,7 @@ test("dispatch persists a completed WorkBuddy result", async () => {
     assert.equal(completed.status, "COMPLETED");
     assert.equal(completed.final_text, "PROJECT_MARKER=violet");
     assert.equal(completed.requested_model, "custom-local:step-3.7-flash");
+    assert.deepEqual(completed.diagnostics, { process_exit_code: 0, stderr_present: false });
     assert.equal(calls[0].cwd, directory);
   } finally {
     await rm(directory, { recursive: true, force: true });
