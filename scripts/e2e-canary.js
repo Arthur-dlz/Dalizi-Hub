@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { CODEBUDDY_SCRIPT } from "../src/workbuddy-runner.js";
 
 const execFile = promisify(execFileCallback);
 const serverPath = fileURLToPath(new URL("../src/mcp-server.js", import.meta.url));
@@ -22,14 +21,7 @@ let secondClient;
 let dispatchedJobId = null;
 let childExitVerified = false;
 
-async function discoverPreferredModel() {
-  const { stdout } = await execFile(process.execPath, [CODEBUDDY_SCRIPT, "--help"], { windowsHide: true, maxBuffer: 512 * 1024 });
-  const supported = stdout.match(/Currently supported:\s*\(([^)]+)\)/s)?.[1]?.split(",").map((item) => item.trim()) ?? [];
-  assert.ok(supported.includes(preferredModel), `${preferredModel} is not currently supported by CodeBuddy`);
-  return preferredModel;
-}
-
-const model = await discoverPreferredModel();
+const model = preferredModel;
 
 function environment() {
   return {

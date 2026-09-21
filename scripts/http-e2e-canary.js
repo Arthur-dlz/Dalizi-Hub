@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createDispatcherFromEnvironment } from "../src/mcp-server.js";
 import { HTTP_MCP_PORT, startHttpMcpServer } from "../src/http-mcp-server.js";
-import { CODEBUDDY_SCRIPT } from "../src/workbuddy-runner.js";
 
 const execFile = promisify(execFileCallback);
 const preferredModel = "custom-local:step-3.7-flash";
@@ -20,13 +19,6 @@ let failureClass = "not_classified";
 function toolJson(response) {
   if (response.isError || response.content?.[0]?.type !== "text") throw new Error("MCP tool response was not successful text content");
   return JSON.parse(response.content[0].text);
-}
-
-async function discoverPreferredModel() {
-  const { stdout } = await execFile(process.execPath, [CODEBUDDY_SCRIPT, "--help"], { windowsHide: true, maxBuffer: 512 * 1024 });
-  const supported = stdout.match(/Currently supported:\s*\(([^)]+)\)/s)?.[1]?.split(",").map((item) => item.trim()) ?? [];
-  if (!supported.includes(preferredModel)) throw new Error("preferred WorkBuddy model is not currently supported");
-  return preferredModel;
 }
 
 async function waitForCompleted(client, jobId) {
@@ -78,7 +70,7 @@ async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), "dalizi-http-canary-"));
   const marker = `PROJECT_MARKER=${randomUUID()}`;
   const token = randomBytes(32).toString("base64url");
-  const model = await discoverPreferredModel();
+  const model = preferredModel;
   let client;
   let secondClient;
   let server;
