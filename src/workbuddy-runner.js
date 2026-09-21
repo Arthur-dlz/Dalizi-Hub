@@ -1,17 +1,42 @@
 import { spawn as spawnChild } from "node:child_process";
+import { realpathSync, statSync } from "node:fs";
 import { interpretRun } from "./stream-json.js";
 
-export const CODEBUDDY_SCRIPT = "D:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+export const CODEBUDDY_SCRIPT = process.env.WORKBUDDY_CLI_PATH;
 const MAX_CAPTURED_OUTPUT_BYTES = 1_000_000;
 
+function resolveCodebuddyScript({ codebuddyScript, environment }) {
+  const candidate = codebuddyScript ?? environment.WORKBUDDY_CLI_PATH;
+  const source = codebuddyScript === undefined ? "WORKBUDDY_CLI_PATH" : "codebuddyScript";
+  if (typeof candidate !== "string" || candidate.trim().length === 0) {
+    throw new Error(`${source} must reference an existing file`);
+  }
+  try {
+    const resolved = realpathSync(candidate);
+    if (!statSync(resolved).isFile()) throw new Error("not a file");
+    return resolved;
+  } catch {
+    throw new Error(`${source} must reference an existing file`);
+  }
+}
+
 export class WorkBuddyRunner {
-  constructor({ codebuddyScript = CODEBUDDY_SCRIPT, nodeExecutable = process.execPath, spawn = spawnChild } = {}) {
-    this.codebuddyScript = codebuddyScript;
+  constructor({ codebuddyScript, environment = process.env, nodeExecutable = process.execPath, spawn = spawnChild } = {}) {
+    try {
+      this.codebuddyScript = resolveCodebuddyScript({ codebuddyScript, environment });
+      this.codebuddyScriptError = null;
+    } catch (error) {
+      this.codebuddyScript = null;
+      this.codebuddyScriptError = error;
+    }
     this.nodeExecutable = nodeExecutable;
     this.spawn = spawn;
   }
 
   async run({ cwd, model, effort, task, onStarted }) {
+    if (this.codebuddyScriptError) {
+      return { pid: null, status: "FAILED", finalText: null, error: `codebuddy_path_error: ${this.codebuddyScriptError.message}`, actualModel: "NOT_OBSERVABLE" };
+    }
     const args = [this.codebuddyScript, "-p", "--output-format", "stream-json", "--model", model, "--effort", effort, task];
     let child;
     try {
