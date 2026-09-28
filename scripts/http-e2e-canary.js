@@ -10,7 +10,7 @@ import { createDispatcherFromEnvironment } from "../src/mcp-server.js";
 import { HTTP_MCP_PORT, startHttpMcpServer } from "../src/http-mcp-server.js";
 
 const execFile = promisify(execFileCallback);
-const preferredModel = "custom-local:step-3.7-flash";
+const preferredModel = "custom-local:step-5-preview";
 const registerScriptPath = fileURLToPath(new URL("./register-project.js", import.meta.url));
 const canaryAlias = "registry-canary";
 let currentStage = "startup";

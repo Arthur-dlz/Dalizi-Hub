@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>大力子任务卡</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 8px; color: var(--color-text-primary, #202123); background: var(--color-background-primary, #fff); }
+    .card { max-width: 560px; border: 1px solid var(--color-border-default, #dedede); border-radius: 14px; padding: 18px; background: var(--color-background-secondary, #fff); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    h1 { margin: 0; font-size: 16px; font-weight: 650; }
+    h2 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--color-text-secondary, #6b6b6b); }
+    .badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; background: #e9f4ff; color: #1264a3; }
+    .badge.completed { background: #e5f6ed; color: #167347; }
+    .badge.failed { background: #fce9e9; color: #a33030; }
+    .badge.cancelled { background: #f2f0f7; color: #5a4a86; }
+    dl { display: grid; grid-template-columns: 132px 1fr; gap: 7px 12px; margin: 0 0 16px; }
+    dt { color: var(--color-text-secondary, #6b6b6b); }
+    dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .result { margin: 0 0 15px; padding: 11px 12px; border-radius: 9px; background: var(--color-background-tertiary, #f5f5f5); }
+    .result[hidden] { display: none; }
+    .result p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    button { border: 1px solid var(--color-border-default, #d0d0d0); background: var(--color-background-primary, #fff); color: inherit; border-radius: 8px; padding: 7px 12px; cursor: pointer; font: inherit; }
+    button:disabled { opacity: .55; cursor: default; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #3085d6; outline-offset: 2px; }
+    label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    #message { min-height: 18px; margin: 10px 0 0; color: var(--color-text-secondary, #666); font-size: 12px; }
+    @media (max-width: 400px) { dl { grid-template-columns: 100px 1fr; } .card { padding: 14px; } }
+  </style>
+</head>
+<body>
+  <main class="card" aria-label="大力子任务卡">
+    <header><h1>大力子任务卡</h1><span id="status" class="badge">WAITING</span></header>
+    <dl>
+      <dt>执行 Agent</dt><dd id="agent">—</dd>
+      <dt>项目</dt><dd id="project">—</dd>
+      <dt>已运行</dt><dd id="elapsed">—</dd>
+      <dt>当前活动</dt><dd id="current_activity">—</dd>
+      <dt>模型</dt><dd id="requested_model">—</dd>
+      <dt>思考强度</dt><dd id="effort">—</dd>
+      <dt>最后更新</dt><dd id="last_updated">—</dd>
+    </dl>
+    <section id="result_block" class="result" hidden>
+      <h2>结果</h2>
+      <p id="result"></p>
+    </section>
+    <div class="actions">
+      <button id="refresh" type="button" disabled>刷新</button>
+      <label><input id="auto_refresh" type="checkbox" disabled> 自动刷新（3秒）</label>
+    </div>
+    <p id="message" role="status">等待 MCP Apps 宿主…</p>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const fields = Object.fromEntries(['agent', 'project', 'elapsed', 'current_activity', 'requested_model', 'effort', 'last_updated', 'result', 'status'].map(id => [id, document.getElementById(id)]));
+      const resultBlock = document.getElementById('result_block');
+      const refreshButton = document.getElementById('refresh');
+      const autoBox = document.getElementById('auto_refresh');
+      const message = document.getElementById('message');
+      const pending = new Map();
+      const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+      const AUTO_REFRESH_MS = 3000;
+      let nextId = 1;
+      let initialized = false;
+      let serverTools = false;
+      let jobId = null;
+      let status = null;
+      let terminal = false;
+      let timer = null;
+      let busy = false;
+      let disposed = false;
+
+      function send(method, params, expectReply = false) {
+        const packet = { jsonrpc: '2.0', method, params };
+        if (!expectReply) { window.parent.postMessage(packet, '*'); return Promise.resolve(); }
+        packet.id = nextId++;
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => { pending.delete(packet.id); reject(new Error('MCP Apps 宿主未响应')); }, 5000);
+          pending.set(packet.id, { resolve, reject, timeout });
+          window.parent.postMessage(packet, '*');
+        });
+      }
+
+      function toMillis(value) {
+        if (typeof value !== 'string' || value.length === 0) return null;
+        const ms = Date.parse(value);
+        return Number.isFinite(ms) ? ms : null;
+      }
+      function stamp(ms) {
+        const iso = new Date(ms).toISOString();
+        return `${iso.slice(0, 10)} ${iso.slice(11, 19)}Z`;
+      }
+      function duration(ms) {
+        const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor(totalSeconds / 60) % 60;
+        const seconds = totalSeconds % 60;
+        if (hours > 0) return `${hours}h ${minutes}m`;
+        if (minutes > 0) return `${minutes}m ${seconds}s`;
+        return `${seconds}s`;
+      }
+      function elapsedText(task) {
+        const start = toMillis(task.started_at) ?? toMillis(task.created_at);
+        if (start === null) return '—';
+        const end = toMillis(task.finished_at) ?? Date.now();
+        return duration(end - start);
+      }
+      function lastUpdatedText(task) {
+        const observed = [task.finished_at, task.started_at, task.created_at].map(toMillis).filter(value => value !== null);
+        return observed.length === 0 ? '—' : stamp(Math.max(...observed));
+      }
+      function resultText(task) {
+        const error = task.error;
+        if (error !== null && error !== undefined && error !== '') {
+          return typeof error === 'string' ? error : JSON.stringify(error);
+        }
+        return typeof task.final_text === 'string' && task.final_text.length > 0 ? task.final_text : '';
+      }
+      function statusMessage(current, isTerminal) {
+        if (isTerminal) return '任务已结束，自动刷新已停止。';
+        if (current === 'RUNNING') return '任务执行中，状态将自动刷新。';
+        if (current === 'QUEUED') return '任务排队中，状态将自动刷新。';
+        return '任务状态将自动刷新。';
+      }
+
+      function stopAuto() {
+        if (timer) clearInterval(timer);
+        timer = null;
+        autoBox.checked = false;
+      }
+      function updateAuto() {
+        if (disposed || !jobId || terminal || !autoBox.checked) { stopAuto(); return; }
+        if (!timer) timer = setInterval(refresh, AUTO_REFRESH_MS);
+      }
+      function showTask(task) {
+        if (!task || typeof task !== 'object' || !task.job_id || task.job_id !== jobId) return;
+        const value = name => (typeof task[name] === 'string' && task[name].length > 0 ? task[name] : '—');
+        fields.agent.textContent = value('agent');
+        fields.project.textContent = value('project');
+        fields.elapsed.textContent = elapsedText(task);
+        fields.current_activity.textContent = value('current_activity');
+        fields.requested_model.textContent = value('requested_model');
+        fields.effort.textContent = value('effort');
+        fields.last_updated.textContent = lastUpdatedText(task);
+        const result = resultText(task);
+        fields.result.textContent = result;
+        resultBlock.hidden = result === '';
+        status = typeof task.status === 'string' && task.status.length > 0 ? task.status : 'UNKNOWN';
+        terminal = TERMINAL_STATUSES.has(status);
+        fields.status.textContent = status;
+        fields.status.className = `badge ${status === 'COMPLETED' ? 'completed' : status === 'FAILED' ? 'failed' : status === 'CANCELLED' ? 'cancelled' : ''}`;
+        autoBox.disabled = terminal;
+        autoBox.checked = !terminal;
+        message.textContent = statusMessage(status, terminal);
+        updateAuto();
+      }
+      function useResult(result) {
+        if (result?.isError) throw new Error(result.content?.[0]?.text ?? 'Tool failed');
+        const task = result?.structuredContent ?? JSON.parse(result?.content?.[0]?.text ?? 'null');
+        showTask(task);
+      }
+      async function refresh() {
+        if (busy || !jobId || disposed) return;
+        busy = true;
+        refreshButton.disabled = true;
+        try {
+          let result;
+          if (initialized && serverTools) {
+            result = await send('tools/call', { name: 'get_task', arguments: { job_id: jobId } }, true);
+          } else if (typeof window.openai?.callTool === 'function') {
+            result = await window.openai.callTool('get_task', { job_id: jobId });
+          } else {
+            throw new Error('MCP Apps 宿主未提供 serverTools 能力');
+          }
+          useResult(result);
+        } catch (error) {
+          message.textContent = `刷新失败：${error.message}`;
+        } finally {
+          busy = false;
+          refreshButton.disabled = disposed || !jobId;
+        }
+      }
+      function dispose() {
+        disposed = true;
+        stopAuto();
+        for (const item of pending.values()) { clearTimeout(item.timeout); item.reject(new Error('卡片已卸载')); }
+        pending.clear();
+      }
+
+      window.addEventListener('message', event => {
+        if (event.source !== window.parent || disposed) return;
+        const packet = event.data;
+        if (!packet || packet.jsonrpc !== '2.0') return;
+        if (Object.hasOwn(packet, 'id') && pending.has(packet.id)) {
+          const item = pending.get(packet.id);
+          pending.delete(packet.id);
+          clearTimeout(item.timeout);
+          if (packet.error) item.reject(new Error(packet.error.message ?? 'MCP Apps request failed'));
+          else item.resolve(packet.result);
+          return;
+        }
+        if (packet.method === 'ui/notifications/tool-input') {
+          const nextJobId = packet.params?.arguments?.job_id ?? null;
+          if (nextJobId !== jobId) {
+            stopAuto();
+            status = null;
+            terminal = false;
+          }
+          jobId = nextJobId;
+          refreshButton.disabled = !jobId;
+          if (jobId) message.textContent = '正在加载任务…';
+        } else if (packet.method === 'ui/notifications/tool-result') {
+          try { useResult(packet.params); } catch (error) { message.textContent = error.message; }
+        } else if (packet.method === 'ui/resource-teardown' && Object.hasOwn(packet, 'id')) {
+          dispose();
+          window.parent.postMessage({ jsonrpc: '2.0', id: packet.id, result: {} }, '*');
+        }
+      });
+      refreshButton.addEventListener('click', refresh);
+      autoBox.addEventListener('change', updateAuto);
+      window.addEventListener('pagehide', dispose);
+      send('ui/initialize', { appInfo: { name: 'Dalizi Task Card', version: '1.0.0' }, appCapabilities: {}, protocolVersion: '2026-01-26' }, true)
+        .then(result => {
+          if (disposed) return;
+          initialized = true;
+          serverTools = Boolean(result?.hostCapabilities?.serverTools);
+          send('ui/notifications/initialized', {});
+          message.textContent = '等待任务…';
+        })
+        .catch(error => { if (!disposed) message.textContent = error.message; });
+    })();
+  </script>
+</body>
+</html>

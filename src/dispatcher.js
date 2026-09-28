@@ -8,16 +8,18 @@ function now() {
 }
 
 export class Dispatcher {
-  constructor({ registry, allowedModels, store, runner }) {
+  constructor({ registry, allowedModels, store, runner, codexRunner, antigravityRunner }) {
     this.registry = registry;
     this.allowedModels = allowedModels;
     this.store = store;
     this.runner = runner;
+    this.codexRunner = codexRunner;
+    this.antigravityRunner = antigravityRunner;
     this.activeJobId = null;
   }
 
   async dispatch(input) {
-    if (this.activeJobId) throw new DispatcherError("dispatcher_busy", "only one WorkBuddy job may run at a time");
+    if (this.activeJobId) throw new DispatcherError("dispatcher_busy", "only one Dispatcher job may run at a time");
     const validated = validateDispatchInput(input, this.allowedModels);
     const cwd = await resolveProject(validated.project, this.registry);
     const jobId = randomUUID();
@@ -54,7 +56,12 @@ export class Dispatcher {
   async #execute(job, input) {
     try {
       await this.store.update(job.job_id, { status: "RUNNING", started_at: now() });
-      const run = await this.runner.run({
+      const runner = input.agent === "codex"
+        ? this.codexRunner
+        : input.agent === "antigravity"
+          ? this.antigravityRunner
+          : this.runner;
+      const run = await runner.run({
         cwd: job.cwd,
         model: input.model,
         effort: input.effort,

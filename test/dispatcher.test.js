@@ -12,17 +12,17 @@ test("dispatch persists a completed WorkBuddy result", async () => {
     const calls = [];
     const dispatcher = new Dispatcher({
       registry: { resolve(project) { if (project !== "canary-project") throw new Error("unexpected project"); return directory; } },
-      allowedModels: new Set(["custom-local:step-3.7-flash"]),
+      allowedModels: new Set(["custom-local:step-5-preview"]),
       store: new JobStore(path.join(directory, "jobs")),
       runner: { async run(input) { calls.push(input); return { pid: 4321, status: "COMPLETED", finalText: "PROJECT_MARKER=violet", error: null, actualModel: "NOT_OBSERVABLE", diagnostics: { process_exit_code: 0, stderr_present: false } }; } },
     });
 
-    const receipt = await dispatcher.dispatch({ agent: "workbuddy", project: "canary-project", task: "read marker", model: "custom-local:step-3.7-flash", effort: "high" });
+    const receipt = await dispatcher.dispatch({ agent: "workbuddy", project: "canary-project", task: "read marker", model: "custom-local:step-5-preview", effort: "high" });
     assert.match(receipt.job_id, /^[0-9a-f-]{36}$/);
     const completed = await waitFor(() => dispatcher.get(receipt.job_id));
     assert.equal(completed.status, "COMPLETED");
     assert.equal(completed.final_text, "PROJECT_MARKER=violet");
-    assert.equal(completed.requested_model, "custom-local:step-3.7-flash");
+    assert.equal(completed.requested_model, "custom-local:step-5-preview");
     assert.deepEqual(completed.diagnostics, { process_exit_code: 0, stderr_present: false });
     assert.equal(calls[0].cwd, directory);
   } finally {

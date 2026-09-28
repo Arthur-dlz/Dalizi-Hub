@@ -84,13 +84,13 @@ test("a running dispatcher resolves a newly registered project on its next dispa
     await mkdir(project);
     const dispatcher = new Dispatcher({
       registry: new ProjectRegistry(registryFile),
-      allowedModels: new Set(["custom-local:step-3.7-flash"]),
+      allowedModels: new Set(["custom-local:step-5-preview"]),
       store: new JobStore(path.join(root, "jobs")),
       runner: { async run(input) { calls.push(input); return { pid: 1, status: "COMPLETED", finalText: "REGISTRY_DISPATCH_MARKER", error: null, actualModel: "test-model" }; } },
     });
-    await assert.rejects(() => dispatcher.dispatch({ agent: "workbuddy", project: "new-project", task: "read", model: "custom-local:step-3.7-flash" }), { code: "unknown_project" });
+    await assert.rejects(() => dispatcher.dispatch({ agent: "workbuddy", project: "new-project", task: "read", model: "custom-local:step-5-preview" }), { code: "unknown_project" });
     await registerProject({ registryFile, alias: "new-project", cwd: project });
-    const receipt = await dispatcher.dispatch({ agent: "workbuddy", project: "new-project", task: "read", model: "custom-local:step-3.7-flash" });
+    const receipt = await dispatcher.dispatch({ agent: "workbuddy", project: "new-project", task: "read", model: "custom-local:step-5-preview" });
     const completed = await waitFor(() => dispatcher.get(receipt.job_id));
     assert.equal(completed.final_text, "REGISTRY_DISPATCH_MARKER");
     assert.equal(calls[0].cwd, await (await import("node:fs/promises")).realpath(project));

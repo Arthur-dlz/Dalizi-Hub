@@ -20,12 +20,12 @@ test("runner resolves the explicit CLI override and preserves Node argv routing"
       },
     });
 
-    const run = await runner.run({ cwd: directory, model: "custom-local:step-3.7-flash", effort: "high", task: "read marker" });
+    const run = await runner.run({ cwd: directory, model: "custom-local:step-5-preview", effort: "high", task: "read marker" });
 
     assert.equal(run.status, "COMPLETED", run.error);
     assert.equal(run.finalText, "override-ok");
     assert.equal(spawned.nodeExecutable, process.execPath);
-    assert.deepEqual(spawned.args, [script, "-p", "--output-format", "stream-json", "--model", "custom-local:step-3.7-flash", "--effort", "high", "read marker"]);
+    assert.deepEqual(spawned.args, [script, "-p", "--output-format", "stream-json", "--model", "custom-local:step-5-preview", "--effort", "high", "read marker"]);
     assert.equal(spawned.options.shell, false);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -39,7 +39,7 @@ test("runner rejects a missing explicit CLI override before it can launch", asyn
     spawn() { spawned = true; },
   });
 
-  const run = await runner.run({ cwd: os.tmpdir(), model: "custom-local:step-3.7-flash", effort: "high", task: "read marker" });
+  const run = await runner.run({ cwd: os.tmpdir(), model: "custom-local:step-5-preview", effort: "high", task: "read marker" });
 
   assert.equal(run.status, "FAILED");
   assert.match(run.error, /WORKBUDDY_CLI_PATH.*existing file/);
@@ -51,7 +51,7 @@ test("runner fails safely when child stream output exceeds its ceiling", async (
   try {
     const script = path.join(directory, "fake-codebuddy.js");
     await writeFile(script, "process.stdout.write('x'.repeat(1_100_000));", "utf8");
-    const run = await new WorkBuddyRunner({ codebuddyScript: script }).run({ cwd: directory, model: "custom-local:step-3.7-flash", effort: "high", task: "read" });
+    const run = await new WorkBuddyRunner({ codebuddyScript: script }).run({ cwd: directory, model: "custom-local:step-5-preview", effort: "high", task: "read" });
     assert.equal(run.status, "FAILED");
     assert.equal(run.error, "output_limit_exceeded");
   } finally {
@@ -67,7 +67,7 @@ test("runner waits for owned PID persistence before returning a final result", a
     let persisted = false;
     const run = await new WorkBuddyRunner({ codebuddyScript: script }).run({
       cwd: directory,
-      model: "custom-local:step-3.7-flash",
+      model: "custom-local:step-5-preview",
       effort: "high",
       task: "read",
       onStarted: async () => { await new Promise((resolve) => setTimeout(resolve, 300)); persisted = true; },

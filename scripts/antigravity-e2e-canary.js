@@ -12,19 +12,16 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 const execFile = promisify(execFileCallback);
 const serverPath = fileURLToPath(new URL("../src/mcp-server.js", import.meta.url));
 const registerScriptPath = fileURLToPath(new URL("./register-project.js", import.meta.url));
-const preferredModel = "custom-local:step-5-preview";
-const canaryAlias = "registry-canary";
-const canaryArguments = process.argv.slice(2);
-if (canaryArguments.some((argument) => argument !== "--pure-text")) throw new Error("usage: node scripts/e2e-canary.js [--pure-text]");
-const pureTextCanary = canaryArguments.includes("--pure-text");
-const marker = pureTextCanary ? `DLZ_R12_OK_${randomUUID()}` : `PROJECT_MARKER=${randomUUID()}`;
-const root = await mkdtemp(path.join(os.tmpdir(), "dalizi-dispatcher-canary-"));
+const model = "gemini-3.8-flash-high";
+const canaryAlias = "agy-canary";
+const marker = `AGY_CANARY_MARKER_${randomUUID()}`;
+const root = await mkdtemp(path.join(os.tmpdir(), "dalizi-dispatcher-agy-canary-"));
 let firstClient;
 let secondClient;
 let dispatchedJobId = null;
 let childExitVerified = false;
 
-const model = preferredModel;
+const workspace = path.join(root, "workspace");
 
 function environment() {
   return {
@@ -34,7 +31,7 @@ function environment() {
 }
 
 async function connect() {
-  const client = new Client({ name: "dalizi-e2e-canary", version: "0.0.0" });
+  const client = new Client({ name: "dalizi-agy-canary", version: "0.0.0" });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [serverPath], env: environment(), stderr: "pipe" }));
   return client;
 }
@@ -51,7 +48,7 @@ async function waitForCompleted(client, jobId) {
     if (job.status === "COMPLETED" || job.status === "FAILED") return job;
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
-  throw new Error("canary timed out waiting for WorkBuddy");
+  throw new Error("canary timed out waiting for Antigravity");
 }
 
 function childHasExited(pid) {
@@ -61,24 +58,6 @@ function childHasExited(pid) {
   } catch (error) {
     return error.code === "ESRCH";
   }
-}
-
-function diagnosticReport(job) {
-  const diagnostics = job.diagnostics ?? {};
-  return {
-    CODEBUDDY_EXIT_CODE: diagnostics.process_exit_code ?? null,
-    STDERR_PRESENT: diagnostics.stderr_present === true ? "YES" : "NO",
-    EVENT_TYPES: diagnostics.event_types ?? [],
-    TERMINAL_RESULT_SEEN: diagnostics.terminal_result_seen === true ? "YES" : "NO",
-    TERMINAL_SUBTYPE: diagnostics.terminal_subtype ?? null,
-    TERMINAL_IS_ERROR: diagnostics.terminal_is_error ?? null,
-    RESULT_FIELD_PRESENT: diagnostics.result_field_present === true ? "YES" : "NO",
-    ERRORS_PRESENT: diagnostics.errors_present === true ? "YES" : "NO",
-    ERRORS_INFO_PRESENT: diagnostics.errors_info_present === true ? "YES" : "NO",
-    ERROR_EVENT_KEYS: diagnostics.error_event_keys ?? [],
-    ERROR_CATEGORY: diagnostics.error_category ?? null,
-    SAFE_ERROR_SUMMARY: diagnostics.safe_error_summary ?? null,
-  };
 }
 
 async function removeCanaryDirectory() {
@@ -96,23 +75,25 @@ async function removeCanaryDirectory() {
 }
 
 try {
-  await execFile("git", ["init"], { cwd: root, windowsHide: true });
-  if (!pureTextCanary) await writeFile(path.join(root, "PROJECT_MARKER"), `${marker}\n`, "utf8");
-  await execFile(process.execPath, [registerScriptPath, "--alias", canaryAlias, "--cwd", root], { env: environment(), windowsHide: true });
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(workspace, { recursive: true });
+  await execFile("git", ["init"], { cwd: workspace, windowsHide: true });
+  await writeFile(path.join(workspace, "PROJECT_MARKER"), `${marker}\n`, "utf8");
+
+  await execFile(process.execPath, [registerScriptPath, "--alias", canaryAlias, "--cwd", workspace], { env: environment(), windowsHide: true });
 
   firstClient = await connect();
   const receipt = toolJson(await firstClient.callTool({
     name: "dispatch_task",
     arguments: {
-      agent: "workbuddy",
+      agent: "antigravity",
       project: canaryAlias,
       model,
       effort: "high",
-      task: pureTextCanary
-        ? `Reply with exactly this marker: ${marker}. Do not read files. Do not call tools.`
-        : "Read PROJECT_MARKER and return only its full contents. Do not modify files.",
+      task: "Read PROJECT_MARKER and return only its full contents. Do not modify files.",
     },
   }));
+
   assert.match(receipt.job_id, /^[0-9a-f-]{36}$/);
   dispatchedJobId = receipt.job_id;
   assert.ok(["QUEUED", "RUNNING"].includes(receipt.status));
@@ -120,32 +101,55 @@ try {
   const completed = await waitForCompleted(firstClient, receipt.job_id);
   if (completed.status !== "COMPLETED") {
     childExitVerified = typeof completed.pid === "number" && childHasExited(completed.pid);
-    console.log(JSON.stringify({ workbuddy_diagnostic: diagnosticReport(completed) }));
-    throw new Error(completed.error ?? "WorkBuddy canary failed");
+    console.error("Antigravity canary failed:", completed.error, JSON.stringify(completed.diagnostics));
+    throw new Error(completed.error ?? "Antigravity canary failed");
   }
+
+  // Verify result fields
+  assert.equal(completed.agent, "antigravity");
+  assert.equal(completed.requested_model, model);
+  assert.equal(completed.actual_model, model);
+  assert.equal(completed.effort, "high");
   assert.equal(typeof completed.final_text, "string");
   assert.ok(completed.final_text.length > 0);
   assert.match(completed.final_text, new RegExp(marker));
-  assert.equal(completed.requested_model, model);
-  assert.equal(typeof completed.actual_model, "string");
-  assert.ok(completed.actual_model.length > 0);
   assert.equal(typeof completed.pid, "number");
-  assert.equal(childHasExited(completed.pid), true, "owned WorkBuddy child is still running");
+  assert.equal(childHasExited(completed.pid), true, "owned Antigravity child is still running");
   childExitVerified = true;
 
+  // Verify file status in canary workspace: zero files modified, marker unchanged
+  const markerContent = await (await import("node:fs/promises")).readFile(path.join(workspace, "PROJECT_MARKER"), "utf8");
+  assert.equal(markerContent, `${marker}\n`, "PROJECT_MARKER was unexpectedly modified");
+  const files = (await (await import("node:fs/promises")).readdir(workspace)).filter((f) => f !== ".git");
+  assert.deepEqual(files, ["PROJECT_MARKER"], `Unexpected files created: ${files}`);
+
+  // Test persistence across MCP client reconnect
   await firstClient.close();
   firstClient = undefined;
   secondClient = await connect();
   const recovered = toolJson(await secondClient.callTool({ name: "get_task", arguments: { job_id: receipt.job_id } }));
   assert.deepEqual(recovered, completed);
 
-  console.log(JSON.stringify({ job_id: receipt.job_id, project: canaryAlias, state_sequence: [receipt.status, completed.status], project_marker_match: true, requested_model: completed.requested_model, actual_model: completed.actual_model, persisted_after_restart: true, workbuddy_diagnostic: diagnosticReport(completed) }));
+  console.log(JSON.stringify({
+    job_id: receipt.job_id,
+    agent: completed.agent,
+    project: canaryAlias,
+    state_sequence: [receipt.status, "RUNNING", completed.status],
+    project_marker_match: true,
+    files_modified: 0,
+    requested_model: completed.requested_model,
+    actual_model: completed.actual_model,
+    effort: completed.effort,
+    token_usage: completed.diagnostics?.token_usage ?? null,
+    persisted_after_restart: true,
+    antigravity_diagnostics: completed.diagnostics,
+  }, null, 2));
 } finally {
   await secondClient?.close();
   await firstClient?.close();
   if (!dispatchedJobId || childExitVerified) {
     await removeCanaryDirectory();
   } else {
-    console.error(`canary directory retained because owned child exit was not verified: ${root}`);
+    console.error(`canary directory retained because child exit was not verified: ${root}`);
   }
 }

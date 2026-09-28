@@ -9,6 +9,7 @@ import { Dispatcher } from "../src/dispatcher.js";
 import { DispatcherError } from "../src/contracts.js";
 import { startHttpMcpServer } from "../src/http-mcp-server.js";
 import { JobStore } from "../src/job-store.js";
+import { TASK_CARD_RESOURCE_URI } from "../src/task-card.js";
 
 function toolJson(response) {
   assert.equal(response.isError, undefined, response.content?.[0]?.text);
@@ -43,9 +44,10 @@ test("the loopback HTTP MCP endpoint requires Bearer auth and shares Dispatcher 
   const token = randomBytes(32).toString("base64url");
   const dispatcher = new Dispatcher({
     registry: { resolve(project) { if (project !== "canary-project") throw new DispatcherError("unknown_project", "project is not registered"); return directory; } },
-    allowedModels: new Set(["custom-local:step-3.7-flash"]),
+    allowedModels: { workbuddy: new Set(["custom-local:step-5-preview"]), codex: new Set(["gpt-6-sol"]) },
     store: new JobStore(path.join(directory, "jobs")),
     runner: createRunner(),
+    codexRunner: createRunner(),
   });
   const server = await startHttpMcpServer({ dispatcher, bearerToken: token, port: 0 });
   const address = server.address();
@@ -69,13 +71,17 @@ test("the loopback HTTP MCP endpoint requires Bearer auth and shares Dispatcher 
     client = new Client({ name: "dalizi-http-test-client", version: "0.0.0" });
     await client.connect(clientTransport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ["dispatch_task", "get_task"]);
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ["dispatch_task", "get_task", "render_task_card"]);
     const dispatchTool = tools.tools.find((tool) => tool.name === "dispatch_task");
     assert.doesNotMatch(JSON.stringify(dispatchTool), /"(?:cwd|path|executable|command)"/);
+    const cardTool = tools.tools.find((tool) => tool.name === "render_task_card");
+    assert.equal(cardTool._meta.ui.resourceUri, TASK_CARD_RESOURCE_URI);
+    const resources = await client.listResources();
+    assert.deepEqual(resources.resources.map((resource) => resource.uri), [TASK_CARD_RESOURCE_URI]);
 
     const receipt = toolJson(await client.callTool({
       name: "dispatch_task",
-      arguments: { agent: "workbuddy", project: "canary-project", task: "read", model: "custom-local:step-3.7-flash" },
+      arguments: { agent: "workbuddy", project: "canary-project", task: "read", model: "custom-local:step-5-preview" },
     }));
     const completed = await waitForTerminalJob(client, receipt.job_id);
     assert.equal(completed.status, "COMPLETED");
@@ -84,11 +90,33 @@ test("the loopback HTTP MCP endpoint requires Bearer auth and shares Dispatcher 
     const recovered = toolJson(await client.callTool({ name: "get_task", arguments: { job_id: receipt.job_id } }));
     assert.deepEqual(recovered, completed);
 
-    const unsupported = await client.callTool({ name: "dispatch_task", arguments: { agent: "codex", project: "canary-project", task: "read", model: "custom-local:step-3.7-flash" } });
+    const rendered = toolJson(await client.callTool({ name: "render_task_card", arguments: { job_id: receipt.job_id } }));
+    assert.deepEqual(rendered, recovered);
+
+    const unknownCard = await client.callTool({ name: "render_task_card", arguments: { job_id: "missing-job" } });
+    assert.equal(unknownCard.isError, true);
+    assert.equal(JSON.parse(unknownCard.content[0].text).error.code, "unknown_job");
+
+    const codexReceipt = toolJson(await client.callTool({
+      name: "dispatch_task",
+      arguments: { agent: "codex", project: "canary-project", task: "read", model: "gpt-6-sol", effort: "high" },
+    }));
+    const codexJob = await waitForTerminalJob(client, codexReceipt.job_id);
+    assert.equal(codexJob.status, "COMPLETED");
+    assert.equal(codexJob.agent, "codex");
+    assert.equal(codexJob.requested_model, "gpt-6-sol");
+    assert.equal(codexJob.effort, "high");
+    assert.equal(codexJob.final_text, "HTTP_TEST_MARKER");
+
+    const rejectedCodexModel = await client.callTool({ name: "dispatch_task", arguments: { agent: "codex", project: "canary-project", task: "read", model: "custom-local:step-5-preview" } });
+    assert.equal(rejectedCodexModel.isError, true);
+    assert.deepEqual(JSON.parse(rejectedCodexModel.content[0].text).error.code, "invalid_model");
+
+    const unsupported = await client.callTool({ name: "dispatch_task", arguments: { agent: "unknown", project: "canary-project", task: "read", model: "custom-local:step-5-preview" } });
     assert.equal(unsupported.isError, true);
     assert.match(unsupported.content[0].text, /unsupported_agent/);
 
-    const unknown = await client.callTool({ name: "dispatch_task", arguments: { agent: "workbuddy", project: "unknown", task: "read", model: "custom-local:step-3.7-flash" } });
+    const unknown = await client.callTool({ name: "dispatch_task", arguments: { agent: "workbuddy", project: "unknown", task: "read", model: "custom-local:step-5-preview" } });
     assert.equal(unknown.isError, true);
     assert.match(unknown.content[0].text, /unknown_project/);
   } finally {
