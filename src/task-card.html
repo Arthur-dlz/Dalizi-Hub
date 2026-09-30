@@ -16,6 +16,7 @@
     .badge.completed { background: #e5f6ed; color: #167347; }
     .badge.failed { background: #fce9e9; color: #a33030; }
     .badge.cancelled { background: #f2f0f7; color: #5a4a86; }
+    .badge.recovery { background: #fff3e0; color: #b25e09; border: 1px solid #e8b45a; }
     dl { display: grid; grid-template-columns: 132px 1fr; gap: 7px 12px; margin: 0 0 16px; }
     dt { color: var(--color-text-secondary, #6b6b6b); }
     dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -42,7 +43,12 @@
       <dt>模型</dt><dd id="requested_model">—</dd>
       <dt>思考强度</dt><dd id="effort">—</dd>
       <dt>最后更新</dt><dd id="last_updated">—</dd>
+      <dt>心跳/观察</dt><dd id="liveness">—</dd>
     </dl>
+    <section id="usage_block" class="result" hidden>
+      <h2>用量</h2>
+      <p id="usage"></p>
+    </section>
     <section id="result_block" class="result" hidden>
       <h2>结果</h2>
       <p id="result"></p>
@@ -56,8 +62,9 @@
   <script>
     (() => {
       'use strict';
-      const fields = Object.fromEntries(['agent', 'project', 'elapsed', 'current_activity', 'requested_model', 'effort', 'last_updated', 'result', 'status'].map(id => [id, document.getElementById(id)]));
+      const fields = Object.fromEntries(['agent', 'project', 'elapsed', 'current_activity', 'requested_model', 'effort', 'last_updated', 'liveness', 'usage', 'result', 'status'].map(id => [id, document.getElementById(id)]));
       const resultBlock = document.getElementById('result_block');
+      const usageBlock = document.getElementById('usage_block');
       const refreshButton = document.getElementById('refresh');
       const autoBox = document.getElementById('auto_refresh');
       const message = document.getElementById('message');
@@ -73,15 +80,29 @@
       let timer = null;
       let busy = false;
       let disposed = false;
+      let lastRevision = null; // 已接受的 v2 快照 revision；null = 尚未接受过带 revision 的快照
+      let lastSnapshot = null; // 最近一次成功渲染的快照（查询失败时保留展示）
+      let pinnedOrigin = null; // 首帧运行时固定的宿主 origin
+
+      // 桥接收敛（蓝图 §8 / IMPLEMENTATION §5.7，按 T0 §3.2 结论）：
+      // 宿主 origin 不可静态枚举（卡片 iframe 为 srcdoc+sandbox、无 allow-same-origin），
+      // 无法写死白名单。过渡方案：首个来自 window.parent 的合法 jsonrpc 封套到达后，
+      // 用其 event.origin 运行时固定宿主 origin；此后接收端校验 origin 一致性，
+      // 发送端 targetOrigin 收紧为该固定值。固定值为 "null"（opaque origin）时
+      // 不能作为 targetOrigin，保留 '*' 过渡。宿主 origin 实测稳定后（T5/live 证据）
+      // 再升级为常量白名单。
+      function postToHost(packet) {
+        window.parent.postMessage(packet, pinnedOrigin !== null && pinnedOrigin !== 'null' ? pinnedOrigin : '*');
+      }
 
       function send(method, params, expectReply = false) {
         const packet = { jsonrpc: '2.0', method, params };
-        if (!expectReply) { window.parent.postMessage(packet, '*'); return Promise.resolve(); }
+        if (!expectReply) { postToHost(packet); return Promise.resolve(); }
         packet.id = nextId++;
         return new Promise((resolve, reject) => {
           const timeout = setTimeout(() => { pending.delete(packet.id); reject(new Error('MCP Apps 宿主未响应')); }, 5000);
           pending.set(packet.id, { resolve, reject, timeout });
-          window.parent.postMessage(packet, '*');
+          postToHost(packet);
         });
       }
 
@@ -110,7 +131,7 @@
         return duration(end - start);
       }
       function lastUpdatedText(task) {
-        const observed = [task.finished_at, task.started_at, task.created_at].map(toMillis).filter(value => value !== null);
+        const observed = [task.updated_at, task.finished_at, task.started_at, task.created_at].map(toMillis).filter(value => value !== null);
         return observed.length === 0 ? '—' : stamp(Math.max(...observed));
       }
       function resultText(task) {
@@ -120,41 +141,118 @@
         }
         return typeof task.final_text === 'string' && task.final_text.length > 0 ? task.final_text : '';
       }
+      // activity 诚实展示（蓝图 §5/§6）：有观测显示最近观测步骤+观测时间；无观测不编造。
+      function activityText(task) {
+        const activity = task.activity !== null && typeof task.activity === 'object' && !Array.isArray(task.activity) ? task.activity : null;
+        if (activity !== null) {
+          const text = [activity.label, activity.state, activity.kind].find(part => typeof part === 'string' && part.length > 0) ?? null;
+          if (text !== null) {
+            const at = toMillis(activity.observed_at);
+            return at === null ? text : `${text}（观测于 ${stamp(at)}）`;
+          }
+        }
+        return typeof task.current_activity === 'string' && task.current_activity.length > 0 ? task.current_activity : '—';
+      }
+      // liveness 诚实展示（蓝图 §7）：只展示实际观测到的心跳/事件/输出/进程检查证据，缺失不补造。
+      function livenessText(task) {
+        const liveness = task.liveness !== null && typeof task.liveness === 'object' && !Array.isArray(task.liveness) ? task.liveness : null;
+        if (liveness === null) return '—';
+        const parts = [];
+        const heartbeat = toMillis(liveness.owner_heartbeat_at);
+        if (heartbeat !== null) parts.push(`心跳 ${stamp(heartbeat)}`);
+        const event = toMillis(liveness.last_event_at);
+        if (event !== null) parts.push(`事件 ${stamp(event)}`);
+        const output = toMillis(liveness.last_output_at);
+        if (output !== null) parts.push(`输出 ${stamp(output)}`);
+        const checked = toMillis(liveness.process_checked_at);
+        if (checked !== null) parts.push(`进程检查 ${stamp(checked)}`);
+        if (typeof liveness.process_state === 'string' && liveness.process_state.length > 0) parts.push(`进程${liveness.process_state}`);
+        return parts.length === 0 ? '—' : parts.join(' · ');
+      }
+      // usage 诚实展示（蓝图 §5.6）：null≠0；未观测指标显示"不可观测"（含原因），不得显示为 0。
+      function usageLines(usage) {
+        if (usage === null || typeof usage !== 'object' || Array.isArray(usage) || Object.keys(usage).length === 0) {
+          return ['不可观测（未收到用量指标）'];
+        }
+        return Object.entries(usage).map(([name, metric]) => {
+          if (metric === null || metric === undefined) return `${name}：不可观测`;
+          if (typeof metric === 'number') return `${name}：${metric}`;
+          if (typeof metric === 'object' && !Array.isArray(metric)) {
+            if (metric.value === null || metric.value === undefined) {
+              const reason = typeof metric.unavailable_reason === 'string' && metric.unavailable_reason.length > 0 ? `（${metric.unavailable_reason}）` : '';
+              return `${name}：不可观测${reason}`;
+            }
+            const unit = typeof metric.unit === 'string' && metric.unit.length > 0 ? ` ${metric.unit}` : '';
+            const scope = typeof metric.scope === 'string' && metric.scope.length > 0 ? `（${metric.scope}）` : '';
+            return `${name}：${metric.value}${unit}${scope}`;
+          }
+          return `${name}：${String(metric)}`;
+        });
+      }
       function statusMessage(current, isTerminal) {
+        const auto = !isTerminal && autoBox.checked;
         if (isTerminal) return '任务已结束，自动刷新已停止。';
-        if (current === 'RUNNING') return '任务执行中，状态将自动刷新。';
-        if (current === 'QUEUED') return '任务排队中，状态将自动刷新。';
-        return '任务状态将自动刷新。';
+        if (current === 'RECOVERY_REQUIRED') return '状态不确定，需人工恢复确认（RECOVERY_REQUIRED），不代表任务仍在运行；请核实后由本地命令 npm run resolve-recovery 处理。';
+        if (current === 'RUNNING') return auto ? '任务执行中，状态将自动刷新。' : '任务执行中，可手动刷新或勾选自动刷新。';
+        if (current === 'QUEUED') return auto ? '任务排队中，状态将自动刷新。' : '任务排队中，可手动刷新或勾选自动刷新。';
+        return auto ? '任务状态将自动刷新。' : '任务状态可手动刷新，或勾选自动刷新。';
       }
 
       function stopAuto() {
         if (timer) clearInterval(timer);
         timer = null;
-        autoBox.checked = false;
       }
       function updateAuto() {
         if (disposed || !jobId || terminal || !autoBox.checked) { stopAuto(); return; }
         if (!timer) timer = setInterval(refresh, AUTO_REFRESH_MS);
       }
+
+      // 防旧响应（蓝图 §6.4）：仅当 job_id 匹配且 revision 更新时替换快照；
+      // v1 快照（无 revision 字段）仅在从未接受过 v2 revision 时兼容接受，此后降级响应一律拒绝。
+      function acceptsSnapshot(task) {
+        if (!task || typeof task !== 'object' || task.job_id !== jobId) return false;
+        if (typeof task.revision === 'number') return lastRevision === null || task.revision > lastRevision;
+        return lastRevision === null;
+      }
+
+      // 绑定新 job 时清空旧 job 的展示，避免旧任务数据残留或被查询失败误保留。
+      function resetDisplay() {
+        for (const id of ['agent', 'project', 'elapsed', 'current_activity', 'requested_model', 'effort', 'last_updated', 'liveness']) {
+          fields[id].textContent = '—';
+        }
+        fields.status.textContent = '—';
+        fields.status.className = 'badge';
+        fields.result.textContent = '';
+        resultBlock.hidden = true;
+        fields.usage.textContent = '';
+        usageBlock.hidden = true;
+        autoBox.disabled = true;
+        message.textContent = jobId ? '正在加载任务…' : '等待任务…';
+      }
+
       function showTask(task) {
-        if (!task || typeof task !== 'object' || !task.job_id || task.job_id !== jobId) return;
+        if (!acceptsSnapshot(task)) return;
+        if (typeof task.revision === 'number') lastRevision = task.revision;
+        lastSnapshot = task;
         const value = name => (typeof task[name] === 'string' && task[name].length > 0 ? task[name] : '—');
         fields.agent.textContent = value('agent');
         fields.project.textContent = value('project');
         fields.elapsed.textContent = elapsedText(task);
-        fields.current_activity.textContent = value('current_activity');
+        fields.current_activity.textContent = activityText(task);
         fields.requested_model.textContent = value('requested_model');
         fields.effort.textContent = value('effort');
         fields.last_updated.textContent = lastUpdatedText(task);
+        fields.liveness.textContent = livenessText(task);
+        fields.usage.textContent = usageLines(task.usage).join('\n');
+        usageBlock.hidden = false;
         const result = resultText(task);
         fields.result.textContent = result;
         resultBlock.hidden = result === '';
         status = typeof task.status === 'string' && task.status.length > 0 ? task.status : 'UNKNOWN';
         terminal = TERMINAL_STATUSES.has(status);
         fields.status.textContent = status;
-        fields.status.className = `badge ${status === 'COMPLETED' ? 'completed' : status === 'FAILED' ? 'failed' : status === 'CANCELLED' ? 'cancelled' : ''}`;
+        fields.status.className = `badge ${status === 'COMPLETED' ? 'completed' : status === 'FAILED' ? 'failed' : status === 'CANCELLED' ? 'cancelled' : status === 'RECOVERY_REQUIRED' ? 'recovery' : ''}`;
         autoBox.disabled = terminal;
-        autoBox.checked = !terminal;
         message.textContent = statusMessage(status, terminal);
         updateAuto();
       }
@@ -163,6 +261,15 @@
         const task = result?.structuredContent ?? JSON.parse(result?.content?.[0]?.text ?? 'null');
         showTask(task);
       }
+
+      // 查询失败 ≠ job 失败（蓝图 §6.5）：保留上次成功快照，显示错误与最后更新时间，允许重试。
+      function reportQueryFailure(error) {
+        const at = lastSnapshot === null ? null : lastUpdatedText(lastSnapshot);
+        message.textContent = at === null
+          ? `刷新失败：${error.message}；尚无成功快照，可重试。`
+          : `刷新失败：${error.message}；已保留最后成功快照（更新于 ${at}），可重试。`;
+      }
+
       async function refresh() {
         if (busy || !jobId || disposed) return;
         busy = true;
@@ -172,13 +279,16 @@
           if (initialized && serverTools) {
             result = await send('tools/call', { name: 'get_task', arguments: { job_id: jobId } }, true);
           } else if (typeof window.openai?.callTool === 'function') {
+            // T0 C4：WorkBuddy 宿主无 window.openai（app.asar 0 命中）；仅作其他宿主过渡回退保留。
             result = await window.openai.callTool('get_task', { job_id: jobId });
           } else {
             throw new Error('MCP Apps 宿主未提供 serverTools 能力');
           }
           useResult(result);
+          // 查询成功：即使快照因重复/过旧 revision 未替换，也清除历史失败提示，回到当前状态提示。
+          if (lastSnapshot !== null) message.textContent = statusMessage(status, terminal);
         } catch (error) {
-          message.textContent = `刷新失败：${error.message}`;
+          reportQueryFailure(error);
         } finally {
           busy = false;
           refreshButton.disabled = disposed || !jobId;
@@ -192,9 +302,15 @@
       }
 
       window.addEventListener('message', event => {
+        // 结构前置校验：只认来自 window.parent 的 jsonrpc 2.0 封套（§5.7 过渡期三要素之一）。
         if (event.source !== window.parent || disposed) return;
         const packet = event.data;
-        if (!packet || packet.jsonrpc !== '2.0') return;
+        if (!packet || typeof packet !== 'object' || packet.jsonrpc !== '2.0') return;
+        if (pinnedOrigin === null) {
+          if (typeof event.origin === 'string' && event.origin.length > 0) pinnedOrigin = event.origin;
+        } else if (event.origin !== pinnedOrigin) {
+          return; // 偏离首帧固定 origin 的消息：丢弃
+        }
         if (Object.hasOwn(packet, 'id') && pending.has(packet.id)) {
           const item = pending.get(packet.id);
           pending.delete(packet.id);
@@ -207,21 +323,27 @@
           const nextJobId = packet.params?.arguments?.job_id ?? null;
           if (nextJobId !== jobId) {
             stopAuto();
+            jobId = nextJobId;
+            lastRevision = null;
+            lastSnapshot = null;
             status = null;
             terminal = false;
+            resetDisplay();
           }
-          jobId = nextJobId;
           refreshButton.disabled = !jobId;
-          if (jobId) message.textContent = '正在加载任务…';
         } else if (packet.method === 'ui/notifications/tool-result') {
-          try { useResult(packet.params); } catch (error) { message.textContent = error.message; }
+          try { useResult(packet.params); } catch (error) { reportQueryFailure(error); }
         } else if (packet.method === 'ui/resource-teardown' && Object.hasOwn(packet, 'id')) {
           dispose();
-          window.parent.postMessage({ jsonrpc: '2.0', id: packet.id, result: {} }, '*');
+          postToHost({ jsonrpc: '2.0', id: packet.id, result: {} });
         }
       });
       refreshButton.addEventListener('click', refresh);
-      autoBox.addEventListener('change', updateAuto);
+      // 自动刷新开关仅由用户操作改变；程序只负责启停计时器（A7）。
+      autoBox.addEventListener('change', () => {
+        updateAuto();
+        if (lastSnapshot !== null) message.textContent = statusMessage(status, terminal);
+      });
       window.addEventListener('pagehide', dispose);
       send('ui/initialize', { appInfo: { name: 'Dalizi Task Card', version: '1.0.0' }, appCapabilities: {}, protocolVersion: '2026-01-26' }, true)
         .then(result => {

@@ -6,6 +6,8 @@ import * as z from "zod/v4";
 import { Dispatcher } from "./dispatcher.js";
 import { DispatcherError } from "./contracts.js";
 import { JobStore } from "./job-store.js";
+import { IdempotencyIndex } from "./idempotency-index.js";
+import { InstanceLock } from "./instance-lock.js";
 import { ProjectRegistry, projectRegistryPath } from "./project-registry.js";
 import { TASK_CARD_MIME_TYPE, TASK_CARD_RESOURCE_URI, readTaskCardHtml, taskCardResourceMeta } from "./task-card.js";
 import { WorkBuddyRunner } from "./workbuddy-runner.js";
@@ -58,6 +60,8 @@ export function createDispatcherFromEnvironment(environment = process.env) {
       antigravity: VERIFIED_ANTIGRAVITY_MODELS,
     },
     store: new JobStore(dataDirectory),
+    idempotencyIndex: new IdempotencyIndex({ directory: dataDirectory }),
+    instanceLock: new InstanceLock({ directory: path.join(dataDirectory, "run") }),
     runner: new WorkBuddyRunner(),
     codexRunner: new CodexRunner({ environment }),
     antigravityRunner: new AntigravityRunner({ environment }),
@@ -78,13 +82,14 @@ export function createMcpServer(dispatcher) {
   server.registerTool(
     "dispatch_task",
     {
-      description: "Queue one WorkBuddy, Codex, or Antigravity task for a registered alias or unique approved workspace directory.",
+      description: "Queue one WorkBuddy, Codex, or Antigravity task for a registered alias or unique approved workspace directory. agent names the target CLI and model the target CLI model. Send a unique high-entropy request_id (8-128 URL-safe characters) so network retries reuse the same job; omitting request_id is allowed but provides no retry guarantee.",
       inputSchema: z.object({
         agent: z.string().max(80),
         project: z.string().max(80),
         task: z.string().max(8_000),
         model: z.string().max(160),
         effort: z.string().max(20).optional(),
+        request_id: z.string().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
       }),
     },
     async (input) => {
@@ -131,5 +136,11 @@ export function createMcpServer(dispatcher) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  void serveStdio(() => createMcpServer(createDispatcherFromEnvironment()));
+  // 启动路径：实例锁 acquire（第二 owner 拒绝启动）→ 索引加载/重建 → 恢复扫描，
+  // 完成后才对外提供工具。
+  void serveStdio(async () => {
+    const dispatcher = createDispatcherFromEnvironment();
+    await dispatcher.initialize();
+    return createMcpServer(dispatcher);
+  });
 }

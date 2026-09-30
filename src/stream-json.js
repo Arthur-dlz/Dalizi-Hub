@@ -1,3 +1,5 @@
+import { StringDecoder } from "node:string_decoder";
+
 function redact(value) {
   return String(value)
     .replace(/(bearer\s+)[^\s]+/gi, "$1[REDACTED]")
@@ -85,44 +87,103 @@ function textFrom(value) {
   return null;
 }
 
-export function interpretRun({ stdout, stderr, exitCode }) {
-  let parsedError = null;
-  let terminalResult = null;
-  let actualModel = "NOT_OBSERVABLE";
-  let malformedOutput = false;
-  let errorEvent = null;
-  const eventTypes = new Set();
-  const assistantContentBlockTypes = new Set();
+// Incremental NDJSON decoder: accepts string or Buffer chunks, survives
+// multi-byte UTF-8 split across chunk boundaries, half lines, several lines in
+// one chunk, streams that do not end with a newline, and bad JSON lines (which
+// are reported through onMalformed instead of throwing).
+export class StreamJsonDecoder {
+  constructor({ onEvent, onMalformed } = {}) {
+    this.onEvent = typeof onEvent === "function" ? onEvent : null;
+    this.onMalformed = typeof onMalformed === "function" ? onMalformed : null;
+    this.textDecoder = new StringDecoder("utf8");
+    this.pending = "";
+  }
 
-  for (const line of String(stdout ?? "").split(/\r?\n/)) {
-    if (!line.trim()) continue;
+  push(chunk) {
+    if (chunk === null || chunk === undefined) return;
+    if (typeof chunk === "string") {
+      this.pending += chunk;
+    } else {
+      this.pending += this.textDecoder.write(chunk);
+    }
+    let newline = this.pending.indexOf("\n");
+    while (newline !== -1) {
+      const line = this.pending.slice(0, newline);
+      this.pending = this.pending.slice(newline + 1);
+      this.#handleLine(line);
+      newline = this.pending.indexOf("\n");
+    }
+  }
+
+  // Processes a trailing half line when the stream ends without a newline.
+  flush() {
+    this.pending += this.textDecoder.end();
+    const rest = this.pending;
+    this.pending = "";
+    if (rest) this.#handleLine(rest);
+  }
+
+  #handleLine(rawLine) {
+    let line = rawLine;
+    if (line.endsWith("\r")) line = line.slice(0, -1);
+    if (!line.trim()) return;
     let event;
     try {
       event = JSON.parse(line);
-    } catch {
-      malformedOutput = true;
-      continue;
+    } catch (error) {
+      this.onMalformed?.(line, error);
+      return;
     }
     if (!event || typeof event !== "object" || Array.isArray(event)) {
-      malformedOutput = true;
-      continue;
+      this.onMalformed?.(line, new Error("event_is_not_a_json_object"));
+      return;
     }
-    if (typeof event.type === "string" && event.type.trim()) eventTypes.add(event.type);
+    this.onEvent?.(event);
+  }
+}
+
+// Folds a stream of parsed events into the V0 run summary state. Shared by
+// interpretRun (whole-output parsing) and the runners (incremental parsing) so
+// verdict equivalence is guaranteed by construction, not by duplicate logic.
+export class RunInterpreter {
+  constructor() {
+    this.eventTypes = new Set();
+    this.assistantContentBlockTypes = new Set();
+    this.terminalResult = null;
+    this.parsedError = null;
+    this.errorEvent = null;
+    this.actualModel = "NOT_OBSERVABLE";
+    this.malformedOutput = false;
+  }
+
+  observe(event) {
+    if (typeof event.type === "string" && event.type.trim()) this.eventTypes.add(event.type);
     if (event.type === "assistant" && Array.isArray(event.message?.content)) {
       for (const block of event.message.content) {
         if (block && typeof block === "object" && typeof block.type === "string" && block.type.trim()) {
-          assistantContentBlockTypes.add(block.type);
+          this.assistantContentBlockTypes.add(block.type);
         }
       }
     }
-    if (typeof event.model === "string" && event.model.trim()) actualModel = event.model;
-    if (typeof event.actual_model === "string" && event.actual_model.trim()) actualModel = event.actual_model;
-    if (event.type === "result") terminalResult = event;
+    if (typeof event.model === "string" && event.model.trim()) this.actualModel = event.model;
+    if (typeof event.actual_model === "string" && event.actual_model.trim()) this.actualModel = event.actual_model;
+    if (event.type === "result") this.terminalResult = event;
     if (event.type === "error" || event.is_error === true) {
-      if (event.type === "error") errorEvent ??= event;
-      parsedError ??= textFrom(event.error) ?? textFrom(event);
+      if (event.type === "error") this.errorEvent ??= event;
+      this.parsedError ??= textFrom(event.error) ?? textFrom(event);
     }
   }
+
+  noteMalformed() {
+    this.malformedOutput = true;
+  }
+}
+
+// Verdict cascade extracted from the original interpretRun: same precedence
+// order (malformed -> terminal is_error -> parsed error -> protocol success ->
+// missing terminal result -> process exit), same diagnostics field set.
+export function finalizeRun(interpreter, { stderr, exitCode }) {
+  const { terminalResult, parsedError, errorEvent, actualModel, malformedOutput, eventTypes, assistantContentBlockTypes } = interpreter;
 
   const diagnostics = (errorCategory = null, errorSummary = null) => ({
     process_exit_code: exitCode,
@@ -163,4 +224,15 @@ export function interpretRun({ stdout, stderr, exitCode }) {
   if (exitCode === 0) return result({ status: "FAILED", finalText: null, error: "missing_terminal_result", errorCategory: "missing_terminal_result" });
   const summary = safeErrorSummary(stderr);
   return result({ status: "FAILED", finalText: null, error: `process_exit_${exitCode}: ${summary}`, errorCategory: "process_exit", errorSummary: summary });
+}
+
+export function interpretRun({ stdout, stderr, exitCode }) {
+  const interpreter = new RunInterpreter();
+  const decoder = new StreamJsonDecoder({
+    onEvent: (event) => interpreter.observe(event),
+    onMalformed: () => interpreter.noteMalformed(),
+  });
+  decoder.push(String(stdout ?? ""));
+  decoder.flush();
+  return finalizeRun(interpreter, { stderr, exitCode });
 }

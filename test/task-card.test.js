@@ -58,6 +58,7 @@ function cardTask(overrides = {}) {
     agent: "workbuddy",
     project: "canary-project",
     status: "RUNNING",
+    revision: 1,
     created_at: "2026-09-26T15:59:00.000Z",
     started_at: "2026-09-26T16:00:00.000Z",
     finished_at: null,
@@ -86,9 +87,10 @@ async function makeCard({ openai, now = FIXED_NOW } = {}) {
   };
   const events = {};
   const outgoing = [];
+  const targets = [];
   const intervals = new Map();
   let nextTimer = 1;
-  const parent = { postMessage(packet) { outgoing.push(packet); } };
+  const parent = { postMessage(packet, targetOrigin) { outgoing.push(packet); targets.push(targetOrigin ?? null); } };
   const window = { parent, openai, addEventListener(name, callback) { events[name] = callback; } };
   class TestDate extends Date { static now() { return now; } }
   runInNewContext(script[1], {
@@ -100,7 +102,7 @@ async function makeCard({ openai, now = FIXED_NOW } = {}) {
     setInterval: (callback) => { const id = nextTimer++; intervals.set(id, callback); return id; },
     clearInterval: (id) => { intervals.delete(id); },
   });
-  const receive = (packet) => events.message({ source: parent, data: { jsonrpc: "2.0", ...packet } });
+  const receive = (packet, origin) => events.message({ source: parent, origin, data: { jsonrpc: "2.0", ...packet } });
   const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
   const start = async () => {
     receive({ id: outgoing[0].id, result: { hostCapabilities: { serverTools: {} } } });
@@ -108,7 +110,8 @@ async function makeCard({ openai, now = FIXED_NOW } = {}) {
   };
   const toolCalls = () => outgoing.filter((packet) => packet.method === "tools/call");
   const tick = () => { for (const callback of [...intervals.values()]) callback(); };
-  return { element, outgoing, intervals, receive, settle, start, toolCalls, tick };
+  const enableAuto = (on = true) => { const box = element("auto_refresh"); box.checked = on; box.listeners.change(); };
+  return { element, outgoing, targets, intervals, receive, settle, start, toolCalls, tick, events, parent, enableAuto };
 }
 
 // Retired PoC-only identifiers, assembled from fragments so that a repository-wide
@@ -122,15 +125,18 @@ test("the UI resource constants, Chinese copy, and Dispatcher field mapping are 
   const html = await readTaskCardHtml();
   assert.match(html, /<html lang="zh-CN">/);
   for (const copy of [
-    "大力子任务卡", "执行 Agent", "项目", "已运行", "当前活动", "模型", "思考强度", "最后更新", "结果",
-    "刷新", "自动刷新（3秒）", "任务排队中，状态将自动刷新。", "任务执行中，状态将自动刷新。", "任务已结束，自动刷新已停止。",
+    "大力子任务卡", "执行 Agent", "项目", "已运行", "当前活动", "模型", "思考强度", "最后更新", "心跳/观察", "用量", "结果",
+    "刷新", "自动刷新（3秒）", "任务排队中，状态将自动刷新。", "任务执行中，状态将自动刷新。", "任务状态将自动刷新。",
+    "任务排队中，可手动刷新或勾选自动刷新。", "任务执行中，可手动刷新或勾选自动刷新。", "任务状态可手动刷新，或勾选自动刷新。",
+    "任务已结束，自动刷新已停止。", "正在加载任务…", "等待任务…", "不可观测（未收到用量指标）", "RECOVERY_REQUIRED",
+    "刷新失败：", "已保留最后成功快照",
   ]) {
     assert.ok(html.includes(copy), `missing Chinese copy: ${copy}`);
   }
-  for (const id of ["agent", "project", "status", "elapsed", "current_activity", "requested_model", "effort", "last_updated", "result"]) {
+  for (const id of ["agent", "project", "status", "elapsed", "current_activity", "requested_model", "effort", "last_updated", "liveness", "usage", "result", "usage_block", "result_block", "refresh", "auto_refresh", "message"]) {
     assert.match(html, new RegExp(`id="${id}"`), `missing element id: ${id}`);
   }
-  for (const field of ["created_at", "started_at", "finished_at", "current_activity", "requested_model", "effort", "final_text", "error"]) {
+  for (const field of ["created_at", "started_at", "finished_at", "current_activity", "requested_model", "effort", "final_text", "error", "revision", "updated_at", "activity", "liveness", "usage", "observed_at", "owner_heartbeat_at", "last_event_at", "last_output_at", "process_state"]) {
     assert.ok(html.includes(field), `missing Dispatcher job field mapping: ${field}`);
   }
   // the card refreshes through the production read tool only
@@ -268,12 +274,18 @@ test("the card tolerates missing optional Dispatcher fields and prefers error ov
   minimal.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-x" } } });
   minimal.receive({ method: "ui/notifications/tool-result", params: { structuredContent: { job_id: "job-x", status: "QUEUED" } } });
   await minimal.settle();
-  for (const id of ["agent", "project", "current_activity", "requested_model", "effort", "elapsed", "last_updated"]) {
+  for (const id of ["agent", "project", "current_activity", "requested_model", "effort", "elapsed", "last_updated", "liveness"]) {
     assert.equal(minimal.element(id).textContent, "—", `${id} must fall back to a placeholder`);
   }
   assert.equal(minimal.element("status").textContent, "QUEUED");
   assert.equal(minimal.element("result_block").hidden, true);
-  assert.equal(minimal.intervals.size, 1);
+  assert.equal(minimal.element("usage_block").hidden, false);
+  assert.equal(minimal.element("usage").textContent, "不可观测（未收到用量指标）");
+  // 自动刷新默认关闭（A7：仅用户操作改变开关）
+  assert.equal(minimal.element("auto_refresh").checked, false);
+  assert.equal(minimal.element("auto_refresh").disabled, false);
+  assert.equal(minimal.intervals.size, 0);
+  assert.equal(minimal.element("message").textContent, "任务排队中，可手动刷新或勾选自动刷新。");
 
   const failed = await makeCard();
   await failed.start();
@@ -289,8 +301,9 @@ test("the card tolerates missing optional Dispatcher fields and prefers error ov
   mismatched.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } });
   mismatched.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ job_id: "other-job" }) } });
   await mismatched.settle();
-  assert.equal(mismatched.element("status").textContent, "", "a payload for another job must be ignored");
-  assert.equal(mismatched.element("agent").textContent, "");
+  assert.equal(mismatched.element("status").textContent, "—", "a payload for another job must be ignored");
+  assert.equal(mismatched.element("agent").textContent, "—");
+  assert.equal(mismatched.element("message").textContent, "正在加载任务…");
   assert.equal(mismatched.intervals.size, 0);
 });
 
@@ -304,11 +317,17 @@ test("the card auto-refreshes non-terminal jobs every 3s, keeps one interval, an
   assert.equal(card.toolCalls().length, 0);
 
   card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } });
-  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "QUEUED" }) } });
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "QUEUED", revision: 1 }) } });
   await card.settle();
   assert.equal(card.element("status").textContent, "QUEUED");
-  assert.equal(card.element("auto_refresh").checked, true);
+  // A7：自动刷新默认关闭，仅用户操作开启
+  assert.equal(card.element("auto_refresh").checked, false);
   assert.equal(card.element("auto_refresh").disabled, false);
+  assert.equal(card.intervals.size, 0);
+  assert.equal(card.element("message").textContent, "任务排队中，可手动刷新或勾选自动刷新。");
+
+  // 用户开启自动刷新 → 单一 interval，提示随实际状态切换
+  card.enableAuto(true);
   assert.equal(card.intervals.size, 1);
   assert.equal(card.element("message").textContent, "任务排队中，状态将自动刷新。");
 
@@ -326,7 +345,7 @@ test("the card auto-refreshes non-terminal jobs every 3s, keeps one interval, an
   card.tick();
   assert.equal(card.toolCalls().length, 1);
 
-  card.receive({ id: card.toolCalls()[0].id, result: { structuredContent: cardTask({ status: "RUNNING" }) } });
+  card.receive({ id: card.toolCalls()[0].id, result: { structuredContent: cardTask({ status: "RUNNING", revision: 2 }) } });
   await card.settle();
   assert.equal(card.element("status").textContent, "RUNNING");
   assert.equal(card.element("message").textContent, "任务执行中，状态将自动刷新。");
@@ -335,27 +354,41 @@ test("the card auto-refreshes non-terminal jobs every 3s, keeps one interval, an
   // manual refresh works while auto-refresh is on and keeps a single interval
   card.element("refresh").listeners.click();
   assert.equal(card.toolCalls().length, 2);
-  card.receive({ id: card.toolCalls()[1].id, result: { structuredContent: cardTask({ status: "RUNNING" }) } });
+  card.receive({ id: card.toolCalls()[1].id, result: { structuredContent: cardTask({ status: "RUNNING", revision: 3 }) } });
   await card.settle();
   assert.equal(card.intervals.size, 1);
 
+  let revision = 3;
   for (const status of ["COMPLETED", "FAILED", "CANCELLED"]) {
     card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } });
-    card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING" }) } });
+    card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: revision + 1 }) } });
     await card.settle();
+    revision += 1;
     assert.equal(card.intervals.size, 1, `${status}: auto-refresh must run while RUNNING`);
-    card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status }) } });
+    card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status, revision: revision + 1 }) } });
     await card.settle();
+    revision += 1;
     assert.equal(card.element("status").textContent, status);
     assert.equal(card.intervals.size, 0, `${status}: auto-refresh must stop`);
-    assert.equal(card.element("auto_refresh").checked, false);
+    // A7：终态停表但不清除用户开关状态，开关对用户不可用
+    assert.equal(card.element("auto_refresh").checked, true, `${status}: snapshots must not rewrite the user toggle`);
     assert.equal(card.element("auto_refresh").disabled, true);
     assert.equal(card.element("message").textContent, "任务已结束，自动刷新已停止。");
+    // 终态后仍可手动刷新（A7）
+    assert.equal(card.element("refresh").disabled, false);
+    const callsBeforeTerminalRefresh = card.toolCalls().length;
+    card.element("refresh").listeners.click();
+    assert.equal(card.toolCalls().length, callsBeforeTerminalRefresh + 1, `${status}: terminal manual refresh must issue a call`);
+    card.receive({ id: card.toolCalls().at(-1).id, result: { structuredContent: cardTask({ status, revision: revision + 1 }) } });
+    await card.settle();
+    revision += 1;
+    assert.equal(card.element("status").textContent, status);
+    assert.equal(card.intervals.size, 0, `${status}: manual refresh at terminal must not restart auto-refresh`);
   }
 
   // teardown clears the live interval and neutralises an already-created tick
   card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } });
-  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING" }) } });
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: revision + 1 }) } });
   await card.settle();
   assert.equal(card.intervals.size, 1);
   const [staleTimer] = [...card.intervals.values()];
@@ -366,7 +399,7 @@ test("the card auto-refreshes non-terminal jobs every 3s, keeps one interval, an
   staleTimer();
   await card.settle();
   assert.equal(card.toolCalls().length, callsBeforeStaleTick);
-  assert.equal(card.element("auto_refresh").checked, false);
+  assert.equal(card.element("auto_refresh").checked, true, "dispose 只停表，不改写用户开关");
 });
 
 test("the card falls back to the host bridge and still only reads get_task", async () => {
@@ -383,4 +416,208 @@ test("the card falls back to the host bridge and still only reads get_task", asy
   assert.equal(card.toolCalls().length, 0);
   assert.equal(card.element("status").textContent, "COMPLETED");
   assert.equal(card.intervals.size, 0);
+});
+
+test("A7: 用户关闭自动刷新后，手动刷新收到 RUNNING 快照，开关保持关闭且无周期计时器", async () => {
+  const card = await makeCard();
+  await card.start();
+  card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } });
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: 1 }) } });
+  await card.settle();
+  assert.equal(card.element("status").textContent, "RUNNING");
+
+  // 用户开启后显式关闭自动刷新
+  card.enableAuto(true);
+  assert.equal(card.intervals.size, 1);
+  card.enableAuto(false);
+  assert.equal(card.element("auto_refresh").checked, false);
+  assert.equal(card.intervals.size, 0);
+
+  // 手动刷新 → 收到 RUNNING 快照（蓝图 §10 A7 指定序列）
+  card.element("refresh").listeners.click();
+  assert.equal(card.toolCalls().length, 1);
+  card.receive({ id: card.toolCalls()[0].id, result: { structuredContent: cardTask({ status: "RUNNING", revision: 2, current_activity: "仍在推进" }) } });
+  await card.settle();
+  assert.equal(card.element("status").textContent, "RUNNING");
+  assert.equal(card.element("current_activity").textContent, "仍在推进");
+  assert.equal(card.element("auto_refresh").checked, false, "非终态快照不得重新打开用户关闭的自动刷新");
+  assert.equal(card.intervals.size, 0, "不得重建周期查询计时器");
+  assert.equal(card.element("message").textContent, "任务执行中，可手动刷新或勾选自动刷新。");
+
+  // 后续非终态快照（宿主推送）同样不得重新打开开关或重建计时器
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: 3 }) } });
+  await card.settle();
+  assert.equal(card.element("auto_refresh").checked, false);
+  assert.equal(card.intervals.size, 0);
+});
+
+test("旧 revision、重复 revision、跨 job 与降级 v1 响应均不覆盖新状态", async () => {
+  const card = await makeCard();
+  await card.start();
+  card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } });
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: 5, current_activity: "第五步" }) } });
+  await card.settle();
+  assert.equal(card.element("current_activity").textContent, "第五步");
+
+  // 乱序：更旧的 revision 不覆盖
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: 3, current_activity: "旧步骤" }) } });
+  await card.settle();
+  assert.equal(card.element("current_activity").textContent, "第五步", "旧 revision 响应不得覆盖");
+
+  // 重复：相同 revision 不重放
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: 5, current_activity: "重复步骤" }) } });
+  await card.settle();
+  assert.equal(card.element("current_activity").textContent, "第五步");
+
+  // 跨 job：不同 job_id 的响应不覆盖
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ job_id: "job-2", revision: 9, current_activity: "别的任务" }) } });
+  await card.settle();
+  assert.equal(card.element("current_activity").textContent, "第五步");
+
+  // 降级：已接受 v2 后，无 revision 的 v1 响应不覆盖
+  const v1 = cardTask({ status: "RUNNING", current_activity: "v1 步骤" });
+  delete v1.revision;
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: v1 } });
+  await card.settle();
+  assert.equal(card.element("current_activity").textContent, "第五步");
+
+  // 更新的 revision 正常覆盖
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "COMPLETED", revision: 6, final_text: "ok" }) } });
+  await card.settle();
+  assert.equal(card.element("status").textContent, "COMPLETED");
+  assert.equal(card.element("result").textContent, "ok");
+});
+
+test("查询失败保留上次成功快照、显示错误与最后更新时间、可重试；不得渲染为 job 失败", async () => {
+  const card = await makeCard();
+  await card.start();
+  card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } });
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: 2, current_activity: "正在编译" }) } });
+  await card.settle();
+  assert.equal(card.element("status").textContent, "RUNNING");
+
+  // 手动刷新 → 宿主返回协议错误 → 保留快照
+  card.element("refresh").listeners.click();
+  assert.equal(card.toolCalls().length, 1);
+  card.receive({ id: card.toolCalls()[0].id, error: { message: "host bridge broken" } });
+  await card.settle();
+  assert.equal(card.element("status").textContent, "RUNNING", "查询失败不得改写 job 状态");
+  assert.equal(card.element("current_activity").textContent, "正在编译", "查询失败保留上次成功快照");
+  assert.equal(
+    card.element("message").textContent,
+    `刷新失败：host bridge broken；已保留最后成功快照（更新于 ${card.element("last_updated").textContent}），可重试。`,
+  );
+  assert.equal(card.element("refresh").disabled, false, "失败后必须允许重试");
+  assert.equal(card.element("result_block").hidden, true);
+
+  // 重试成功 → 状态提示恢复
+  card.element("refresh").listeners.click();
+  assert.equal(card.toolCalls().length, 2);
+  card.receive({ id: card.toolCalls()[1].id, result: { structuredContent: cardTask({ status: "COMPLETED", revision: 3, final_text: "done" }) } });
+  await card.settle();
+  assert.equal(card.element("status").textContent, "COMPLETED");
+  assert.equal(card.element("result").textContent, "done");
+  assert.equal(card.element("message").textContent, "任务已结束，自动刷新已停止。");
+});
+
+test("RECOVERY_REQUIRED 显著标识；usage/activity/liveness 诚实展示不编造", async () => {
+  const card = await makeCard();
+  await card.start();
+  card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-r" } } });
+  card.receive({
+    method: "ui/notifications/tool-result",
+    params: {
+      structuredContent: cardTask({
+        job_id: "job-r",
+        status: "RECOVERY_REQUIRED",
+        revision: 4,
+        current_activity: null,
+        activity: null,
+        liveness: { owner_heartbeat_at: null, process_checked_at: null, process_state: null, last_event_at: "2026-09-26T15:59:30.000Z", last_output_at: null },
+        usage: {
+          input_tokens: { value: null, unit: "tokens", unavailable_reason: "来源未提供" },
+          output_tokens: { value: 120, unit: "tokens" },
+          reasoning_tokens: null,
+        },
+      }),
+    },
+  });
+  await card.settle();
+  assert.equal(card.element("status").textContent, "RECOVERY_REQUIRED");
+  assert.equal(card.element("status").className, "badge recovery");
+  assert.match(card.element("message").textContent, /RECOVERY_REQUIRED/);
+  assert.doesNotMatch(card.element("message").textContent, /将自动刷新|执行中/, "恢复状态不得表述为永久 RUNNING");
+  assert.equal(card.element("current_activity").textContent, "—", "无活动观测不得编造");
+  assert.equal(card.element("liveness").textContent, "事件 2026-09-26 15:59:30Z");
+  assert.equal(card.element("usage_block").hidden, false);
+  const usageText = card.element("usage").textContent;
+  assert.match(usageText, /input_tokens：不可观测（来源未提供）/);
+  assert.match(usageText, /output_tokens：120 tokens/);
+  assert.match(usageText, /reasoning_tokens：不可观测/);
+
+  // usage 整体缺失 → 不可观测；activity 有观测 → 显示步骤+观测时间
+  const observed = await makeCard();
+  await observed.start();
+  observed.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } });
+  observed.receive({
+    method: "ui/notifications/tool-result",
+    params: {
+      structuredContent: cardTask({
+        status: "RUNNING",
+        revision: 1,
+        usage: null,
+        activity: { kind: "tool", label: "正在检索", state: "active", observed_at: "2026-09-26T15:59:50.000Z" },
+      }),
+    },
+  });
+  await observed.settle();
+  assert.equal(observed.element("usage").textContent, "不可观测（未收到用量指标）");
+  assert.equal(observed.element("current_activity").textContent, "正在检索（观测于 2026-09-26 15:59:50Z）");
+  assert.equal(observed.element("liveness").textContent, "—");
+});
+
+test("桥接收敛：结构/event.source 校验、首帧运行时固定 origin、targetOrigin 收紧", async () => {
+  const card = await makeCard();
+  // 固定前：目标 origin 过渡使用 '*'
+  assert.equal(card.targets[0], "*");
+  await card.start();
+  assert.equal(card.targets[1], "*");
+
+  // event.source 不是 window.parent → 忽略（可观测证据：消息未进入处理分支）
+  card.events.message({ source: { imposter: true }, data: { jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } } });
+  assert.equal(card.element("message").textContent, "等待任务…");
+
+  // 非法结构（非 jsonrpc 封套）→ 忽略
+  card.events.message({ source: card.parent, data: { method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } } });
+  assert.equal(card.element("message").textContent, "等待任务…");
+
+  // 首个合法封套：运行时固定宿主 origin（T0 §3.2：origin 不可静态枚举）
+  card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } }, "https://host.example");
+  assert.equal(card.element("message").textContent, "正在加载任务…");
+  assert.equal(card.element("refresh").disabled, false);
+
+  // 固定后：发送 targetOrigin 收紧为固定值
+  card.element("refresh").listeners.click();
+  assert.equal(card.targets.at(-1), "https://host.example");
+
+  // 偏离固定 origin 的宿主消息被丢弃
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "RUNNING", revision: 1 }) } }, "https://evil.example");
+  await card.settle();
+  assert.equal(card.element("status").textContent, "—");
+
+  // 与固定 origin 一致的响应正常接受
+  card.receive({ id: card.toolCalls()[0].id, result: { structuredContent: cardTask({ status: "RUNNING", revision: 1 }) } }, "https://host.example");
+  await card.settle();
+  assert.equal(card.element("status").textContent, "RUNNING");
+
+  // opaque origin（"null"）可固定用于接收校验，但不能作为 targetOrigin → 过渡保留 '*'
+  const opaque = await makeCard();
+  await opaque.start();
+  opaque.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-1" } } }, "null");
+  assert.equal(opaque.element("message").textContent, "正在加载任务…");
+  opaque.element("refresh").listeners.click();
+  assert.equal(opaque.targets.at(-1), "*");
+  opaque.receive({ id: opaque.toolCalls()[0].id, result: { structuredContent: cardTask({ status: "RUNNING", revision: 1 }) } }, "null");
+  await opaque.settle();
+  assert.equal(opaque.element("status").textContent, "RUNNING");
 });

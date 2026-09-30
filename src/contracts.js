@@ -1,6 +1,10 @@
 export const EFFORT_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 export const ANTIGRAVITY_EFFORT_LEVELS = new Set(["low", "medium", "high", "max"]);
 
+// request_id：8–128 URL-safe 字符（unreserved：字母/数字/下划线/连字符）。
+// 高熵生成、网络重试复用同一 id；缺省允许（明确没有安全重试保证）。
+export const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+
 export class DispatcherError extends Error {
   constructor(code, message) {
     super(message);
@@ -13,6 +17,15 @@ function requireShortString(value, field, maxLength) {
     throw new DispatcherError("invalid_input", `${field} must be a non-empty string no longer than ${maxLength} characters`);
   }
   return value.trim();
+}
+
+// 可选幂等键：缺省返回 null（旧调用兼容，无重试保证）；提供则严格校验格式。
+function validateRequestId(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !REQUEST_ID_PATTERN.test(value)) {
+    throw new DispatcherError("invalid_request_id", "request_id must be 8-128 URL-safe characters (letters, digits, underscore, hyphen)");
+  }
+  return value;
 }
 
 export function validateDispatchInput(input, allowedModels) {
@@ -39,7 +52,7 @@ export function validateDispatchInput(input, allowedModels) {
   if (!(models instanceof Set) || !models.has(model)) {
     throw new DispatcherError("invalid_model", "model is not in the Dispatcher allowlist");
   }
-  return { agent: input.agent, project, task, model, effort };
+  return { agent: input.agent, project, task, model, effort, request_id: validateRequestId(input.request_id) };
 }
 
 export function resolveProject(project, registry) {

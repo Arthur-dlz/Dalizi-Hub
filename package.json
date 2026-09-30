@@ -10,7 +10,8 @@
     "canary": "node scripts/e2e-canary.js",
     "canary:antigravity": "node scripts/antigravity-e2e-canary.js",
     "register-project": "node scripts/register-project.js",
-    "canary:http": "node scripts/http-e2e-canary.js"
+    "canary:http": "node scripts/http-e2e-canary.js",
+    "resolve-recovery": "node scripts/resolve-recovery.js"
   },
   "keywords": [],
   "author": "",

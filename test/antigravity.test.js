@@ -48,6 +48,11 @@ test("Antigravity runner passes model, effort and canonical cwd through argv wit
     assert.deepEqual(run.diagnostics.step_types, ["agent_response"]);
     assert.equal(run.diagnostics.conversation_id, "conv-1");
     assert.deepEqual(run.diagnostics.token_usage, { total_tokens: 100 });
+    // Permission decision record (docs/impl/agy-permission-decision.md §4,
+    // option C, branch 1 verified live on agy 1.2.14): the runner must NOT
+    // pass --dangerously-skip-permissions; the settings.json permission engine
+    // carries the directory whitelist instead.
+    assert.equal(invocation().args.includes("--dangerously-skip-permissions"), false);
     assert.deepEqual(invocation().args, [
       "-p",
       "read marker",
@@ -57,7 +62,6 @@ test("Antigravity runner passes model, effort and canonical cwd through argv wit
       "gemini-3.8-flash-high",
       "--effort",
       "high",
-      "--dangerously-skip-permissions",
     ]);
     assert.equal(invocation().options.cwd, directory);
     assert.equal(invocation().options.shell, false);
@@ -96,8 +100,8 @@ test("explicit ANTIGRAVITY_CLI_PATH is canonicalized and used without changing a
       "gemini-3.8-flash-high",
       "--effort",
       "medium",
-      "--dangerously-skip-permissions",
     ]);
+    assert.equal(spawned.args.includes("--dangerously-skip-permissions"), false);
     assert.equal(spawned.options.shell, false);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -334,4 +338,120 @@ test("Antigravity usage parser extracts groups and buckets safely", () => {
   const empty = parseAntigravityUsage(null);
   assert.equal(empty.status, "FAILED");
   assert.equal(empty.error, "invalid_usage_output");
+});
+
+test("Antigravity runner maps step_update tool sequence to activity events and never surfaces message steps", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-agy-act-"));
+  try {
+    const streamOutput = [
+      JSON.stringify({ event: "init", conversation_id: "conv-act", init: { model: "gemini-3.8-flash-high" } }),
+      JSON.stringify({ event: "step_update", step_update: { step_index: 0, state: "DONE", step_type: "user_input" } }),
+      JSON.stringify({ event: "step_update", step_update: { step_index: 1, state: "DONE", step_type: "agent_response", usage: { total_tokens: 50 } } }),
+      JSON.stringify({ event: "step_update", step_update: { step_index: 2, state: "ACTIVE", step_type: "tool", tool_name: "write_to_file" } }),
+      JSON.stringify({ event: "step_update", step_update: { step_index: 2, state: "DONE", step_type: "tool", tool_name: "write_to_file" } }),
+      JSON.stringify({ event: "step_update", step_update: { step_index: 3, state: "DONE", step_type: "agent_response" } }),
+      JSON.stringify({ event: "step_update", step_update: { step_index: 6, state: "ERROR", step_type: "tool", tool_name: "write_to_file", tool_info: { error: { message: "permission denied" } } } }),
+      JSON.stringify({ event: "result", result: { conversation_id: "conv-act", status: "SUCCESS", response: "done" } }),
+    ].join("\n");
+    const script = "console.log(" + JSON.stringify(streamOutput) + ");";
+    const { runner } = await fakeAntigravity(directory, script);
+    const events = [];
+    const run = await runner.run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read", emit: (envelope) => events.push(envelope) });
+    assert.equal(run.status, "COMPLETED", run.error);
+
+    const activities = events.filter((e) => e.kind === "activity").map((e) => e.payload);
+    assert.deepEqual(activities, [
+      { kind: "tool_use", label: "write_to_file", state: "running" },
+      { kind: "tool_use", label: "write_to_file", state: "completed" },
+      { kind: "tool_use", label: "write_to_file", state: "failed" },
+    ]);
+
+    // Partial §3.2 envelope shape: schema, agent, session id from the stream.
+    const started = events.find((e) => e.kind === "started");
+    assert.equal(started.schema_version, 1);
+    assert.equal(started.source.agent, "antigravity");
+    const resultEvent = events.find((e) => e.kind === "result");
+    assert.equal(resultEvent.source.session_id, "conv-act");
+    assert.equal(resultEvent.payload.final_text, "done");
+    assert.equal(run.emit_errors, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Antigravity runner maps result usage to canonical metrics without double counting", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-agy-usage-"));
+  try {
+    // step_update usage is NOT aggregated (per task card); result usage replaces
+    // the whole aggregation, and a replayed result event must not add on top.
+    const usage = { input_tokens: 10, output_tokens: 5, thinking_tokens: 2, cache_read_tokens: 3, total_tokens: 15, duration_seconds: 1.5, num_turns: 1 };
+    const streamOutput = [
+      JSON.stringify({ event: "init", init: { model: "gemini-3.8-flash-high" } }),
+      JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", usage: { input_tokens: 90, output_tokens: 9, total_tokens: 99 } } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "u", usage } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "u", usage } }),
+    ].join("\n");
+    const script = "console.log(" + JSON.stringify(streamOutput) + ");";
+    const { runner } = await fakeAntigravity(directory, script);
+    const run = await runner.run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
+    assert.equal(run.status, "COMPLETED", run.error);
+
+    const metrics = run.usage.metrics;
+    assert.equal(metrics.input_tokens.value, 10);
+    assert.equal(metrics.input_tokens.source_field, "result.usage.input_tokens");
+    assert.equal(metrics.output_tokens.value, 5);
+    assert.equal(metrics.total_tokens.value, 15);
+    assert.equal(metrics.total_tokens.quality, "reported");
+    assert.equal(metrics.cache_read_tokens.value, 3);
+    assert.equal(metrics.reasoning_tokens.value, 2);
+    assert.equal(metrics.reasoning_tokens.source_field, "result.usage.thinking_tokens");
+    assert.equal(metrics.wall_duration_ms.value, 1500);
+    assert.equal(metrics.num_turns.value, 1);
+    assert.equal(metrics.cache_write_tokens.value, null);
+    assert.equal(metrics.cache_write_tokens.unavailable_reason, "source_field_absent");
+    assert.deepEqual(run.usage.inclusion, { input_includes_cache: null, output_includes_reasoning: true });
+    assert.equal(run.usage.schema_version, 1);
+
+    // Replay never doubles: total stays the reported value, not summed.
+    assert.equal(metrics.total_tokens.value, 15);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Antigravity runner resolves terminal-versus-exit conflicts as failures", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-agy-conflict-"));
+  try {
+    // A SUCCESS terminal result contradicted by a non-zero exit stays FAILED.
+    const successButExit = await fakeAntigravity(
+      directory,
+      "console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:'ok'}}));process.exitCode=3;",
+    );
+    const runA = await successButExit.runner.run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
+    assert.equal(runA.status, "FAILED");
+    assert.equal(runA.error, "antigravity_process_exit_3");
+    assert.equal(runA.finalText, null);
+
+    // An ERROR terminal result with a zero exit is a terminal failure.
+    const errorButZeroExit = await fakeAntigravity(
+      directory,
+      "console.log(JSON.stringify({event:'result',result:{status:'ERROR',error:'boom'}}));",
+    );
+    const runB = await errorButZeroExit.runner.run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
+    assert.equal(runB.status, "FAILED");
+    assert.equal(runB.error, "antigravity_terminal_error");
+    assert.equal(runB.diagnostics.error_category, "terminal_failure");
+
+    // A SUCCESS terminal with an empty response has no final text: missing
+    // terminal result, not COMPLETED with empty output.
+    const emptyResponse = await fakeAntigravity(
+      directory,
+      "console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:''}}));",
+    );
+    const runC = await emptyResponse.runner.run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
+    assert.equal(runC.status, "FAILED");
+    assert.equal(runC.error, "antigravity_missing_terminal_result");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
