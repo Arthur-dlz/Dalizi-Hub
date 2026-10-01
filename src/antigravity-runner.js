@@ -1,6 +1,7 @@
 import { spawn as spawnChild } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { egressProxyEnv } from "./egress-proxy.js";
 import { StreamJsonDecoder } from "./stream-json.js";
 import { UsageAggregator } from "./usage.js";
 
@@ -260,6 +261,7 @@ export class AntigravityRunner {
       this.executableError = error;
     }
     this.spawn = spawn;
+    this.environment = environment;
   }
 
   async run({ cwd, model, effort, task, onStarted, emit }) {
@@ -337,7 +339,11 @@ export class AntigravityRunner {
     const args = ["-p", task, "--output-format", "stream-json", "--model", model, "--effort", effort];
     let child;
     try {
-      child = this.spawn(this.executable, args, { cwd, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      // Egress proxy scoped to this child only (egress-proxy.js header): agy
+      // reaches Google via the local Clash proxy; override/disable via
+      // ANTIGRAVITY_PROXY_URL. Verified by the T5 canary probe 2026-10-01.
+      const env = { ...process.env, ...egressProxyEnv(this.environment, "ANTIGRAVITY_PROXY_URL") };
+      child = this.spawn(this.executable, args, { cwd, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env });
     } catch (error) {
       emitEvent("error", { kind: "antigravity_launch_error", message: "antigravity_launch_error" });
       return launchFailureResult(error?.code);

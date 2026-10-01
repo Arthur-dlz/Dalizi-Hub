@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CodexRunner } from "../src/codex-runner.js";
+import { DEFAULT_EGRESS_PROXY_URL } from "../src/egress-proxy.js";
 import { Dispatcher } from "../src/dispatcher.js";
 import { JobStore } from "../src/job-store.js";
 
@@ -53,7 +54,9 @@ test("Codex runner passes model, effort and canonical cwd through argv with no s
     assert.equal(run.finalText, "marker-ok");
     assert.equal(run.diagnostics.process_exit_code, 0);
     assert.equal(invocation().executable, "codex");
-    assert.deepEqual(invocation().args, ["exec", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=high", "-C", directory, "--json", "read marker"]);
+    // --skip-git-repo-check is mandatory: the dispatcher registry/roots are
+    // the trust layer; codex 0.159.2 hard-fails outside a git repo otherwise.
+    assert.deepEqual(invocation().args, ["exec", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=high", "-C", directory, "--json", "--skip-git-repo-check", "read marker"]);
     assert.equal(invocation().options.cwd, directory);
     assert.equal(invocation().options.shell, false);
     assert.deepEqual(invocation().options.stdio, ["ignore", "pipe", "pipe"]);
@@ -78,7 +81,7 @@ test("explicit CODEX_CLI_PATH is canonicalized and used without changing argv", 
     assert.equal(run.status, "COMPLETED", run.error);
     assert.equal(run.finalText, "path-ok");
     assert.equal(spawned.executable, process.execPath);
-    assert.deepEqual(spawned.args, ["exec", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=high", "-C", directory, "--json", "read marker"]);
+    assert.deepEqual(spawned.args, ["exec", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=high", "-C", directory, "--json", "--skip-git-repo-check", "read marker"]);
     assert.equal(spawned.options.shell, false);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -421,6 +424,59 @@ test("the completed final text is redacted before it is returned", async () => {
     const run = await runner.run({ cwd: directory, model: "gpt-6-sol", effort: "high", task: "read" });
     assert.equal(run.status, "COMPLETED", run.error);
     assert.equal(run.finalText, "done token=[REDACTED]");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// Same egress-proxy root cause as agy (T5 canary, 2026-10-01): codex reaches
+// the OpenAI API through the local Clash proxy, injected per-child only.
+test("Codex runner injects the default egress proxy into the child environment", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-codex-env-"));
+  try {
+    const { runner, invocation } = await fakeCodex(
+      directory,
+      "console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'proxy-ok'}}));console.log(JSON.stringify({type:'turn.completed'}));",
+    );
+    const run = await runner.run({ cwd: directory, model: "gpt-6-sol", effort: "high", task: "read" });
+    assert.equal(run.status, "COMPLETED", run.error);
+    assert.equal(invocation().options.env.HTTPS_PROXY, DEFAULT_EGRESS_PROXY_URL);
+    assert.equal(invocation().options.env.HTTP_PROXY, DEFAULT_EGRESS_PROXY_URL);
+    assert.match(invocation().options.env.NO_PROXY, /127\.0\.0\.1/);
+    const parentPath = process.env.Path ?? process.env.PATH;
+    assert.equal(invocation().options.env.Path ?? invocation().options.env.PATH, parentPath);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CODEX_PROXY_URL overrides the default; 'direct' disables the injection", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-codex-env2-"));
+  try {
+    const script = path.join(directory, "fake-codex.js");
+    await writeFile(
+      script,
+      "console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'ok'}}));console.log(JSON.stringify({type:'turn.completed'}));",
+      "utf8",
+    );
+    const seen = [];
+    const makeRunner = (environment) => new CodexRunner({
+      environment,
+      spawn(executable, args, options) {
+        seen.push(options);
+        return spawnChild(process.execPath, [script, ...args], options);
+      },
+    });
+    const overridden = await makeRunner({ CODEX_PROXY_URL: "http://127.0.0.1:9999" })
+      .run({ cwd: directory, model: "gpt-6-sol", effort: "high", task: "read" });
+    assert.equal(overridden.status, "COMPLETED", overridden.error);
+    assert.equal(seen[0].env.HTTPS_PROXY, "http://127.0.0.1:9999");
+
+    const direct = await makeRunner({ CODEX_PROXY_URL: "direct" })
+      .run({ cwd: directory, model: "gpt-6-sol", effort: "high", task: "read" });
+    assert.equal(direct.status, "COMPLETED", direct.error);
+    assert.equal(seen[1].env.HTTPS_PROXY, process.env.HTTPS_PROXY);
+    assert.equal(seen[1].env.NO_PROXY, process.env.NO_PROXY);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

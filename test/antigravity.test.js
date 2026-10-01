@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AntigravityRunner, parseAntigravityRun } from "../src/antigravity-runner.js";
+import { DEFAULT_EGRESS_PROXY_URL } from "../src/egress-proxy.js";
 import { parseAntigravityUsage } from "../src/antigravity-usage.js";
 import { Dispatcher } from "../src/dispatcher.js";
 import { JobStore } from "../src/job-store.js";
@@ -274,13 +275,24 @@ test("Dispatcher routes Antigravity to its runner, rejects invalid models/effort
   }
 });
 
-test("contracts validates antigravity effort levels", () => {
-  for (const effort of ["low", "medium", "high", "max"]) {
-    const validated = validateDispatchInput(
-      { agent: "antigravity", project: "p", task: "t", model: "gemini-3.8-flash-high", effort },
-      models,
+test("contracts validates antigravity effort levels against the model tier", () => {
+  // agy 1.2.14 live evidence (T5 canary 2026-10-01): a tier-suffixed model
+  // hard-errors on a conflicting --effort, so only the tier-matching level is
+  // valid for gemini-3.8-flash-high.
+  const validated = validateDispatchInput(
+    { agent: "antigravity", project: "p", task: "t", model: "gemini-3.8-flash-high", effort: "high" },
+    models,
+  );
+  assert.equal(validated.effort, "high");
+  for (const effort of ["low", "medium", "max"]) {
+    assert.throws(
+      () => validateDispatchInput(
+        { agent: "antigravity", project: "p", task: "t", model: "gemini-3.8-flash-high", effort },
+        models,
+      ),
+      { code: "invalid_effort" },
+      `tier-conflicting effort ${effort} must be rejected`,
     );
-    assert.equal(validated.effort, effort);
   }
   for (const effort of ["minimal", "xhigh", "unsupported"]) {
     assert.throws(
@@ -451,6 +463,61 @@ test("Antigravity runner resolves terminal-versus-exit conflicts as failures", a
     const runC = await emptyResponse.runner.run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
     assert.equal(runC.status, "FAILED");
     assert.equal(runC.error, "antigravity_missing_terminal_result");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// T5 canary (2026-10-01): agy failed through the live dispatcher with
+// "model unavailable" because the dispatcher environment has no proxy and
+// Google is unreachable directly. The runner now injects the Clash egress
+// proxy into the child environment only.
+test("Antigravity runner injects the default egress proxy into the child environment", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-agy-env-"));
+  try {
+    const { runner, invocation } = await fakeAntigravity(
+      directory,
+      "console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:'proxy-ok'}}));",
+    );
+    const run = await runner.run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
+    assert.equal(run.status, "COMPLETED", run.error);
+    assert.equal(invocation().options.env.HTTPS_PROXY, DEFAULT_EGRESS_PROXY_URL);
+    assert.equal(invocation().options.env.HTTP_PROXY, DEFAULT_EGRESS_PROXY_URL);
+    assert.equal(invocation().options.env.https_proxy, DEFAULT_EGRESS_PROXY_URL);
+    assert.match(invocation().options.env.NO_PROXY, /127\.0\.0\.1/);
+    // The parent environment is preserved underneath the injection.
+    const parentPath = process.env.Path ?? process.env.PATH;
+    assert.equal(invocation().options.env.Path ?? invocation().options.env.PATH, parentPath);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ANTIGRAVITY_PROXY_URL overrides the default; 'direct' disables the injection", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-agy-env2-"));
+  try {
+    const source = "console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:'ok'}}));";
+    const script = path.join(directory, "fake-agy.js");
+    await writeFile(script, source, "utf8");
+    const seen = [];
+    const makeRunner = (environment) => new AntigravityRunner({
+      environment,
+      spawn(executable, args, options) {
+        seen.push(options);
+        return spawnChild(process.execPath, [script, ...args], options);
+      },
+    });
+    const overridden = await makeRunner({ ANTIGRAVITY_PROXY_URL: "http://127.0.0.1:9999" })
+      .run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
+    assert.equal(overridden.status, "COMPLETED", overridden.error);
+    assert.equal(seen[0].env.HTTPS_PROXY, "http://127.0.0.1:9999");
+
+    const direct = await makeRunner({ ANTIGRAVITY_PROXY_URL: "direct" })
+      .run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
+    assert.equal(direct.status, "COMPLETED", direct.error);
+    // No injection: the child sees exactly what the parent has (possibly undefined).
+    assert.equal(seen[1].env.HTTPS_PROXY, process.env.HTTPS_PROXY);
+    assert.equal(seen[1].env.NO_PROXY, process.env.NO_PROXY);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

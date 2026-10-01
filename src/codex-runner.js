@@ -1,6 +1,7 @@
 import { spawn as spawnChild } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { egressProxyEnv } from "./egress-proxy.js";
 import { StreamJsonDecoder } from "./stream-json.js";
 import { UsageAggregator } from "./usage.js";
 
@@ -223,6 +224,7 @@ export class CodexRunner {
       this.executableError = error;
     }
     this.spawn = spawn;
+    this.environment = environment;
   }
 
   async run({ cwd, model, effort, task, onStarted, emit }) {
@@ -292,10 +294,19 @@ export class CodexRunner {
       onMalformed: () => interpreter.noteMalformed(),
     });
 
-    const args = ["exec", "-m", model, "-c", `model_reasoning_effort=${effort}`, "-C", cwd, "--json", task];
+    // --skip-git-repo-check: the dispatcher's own registry + workspace-roots
+    // are the trust arbitration layer (approved project dirs need not be git
+    // repos); codex's git-repo trust check duplicates and conflicts with it.
+    // codex 0.159.2 hard-fails without this flag outside a git repo (T5
+    // canary, 2026-10-01).
+    const args = ["exec", "-m", model, "-c", `model_reasoning_effort=${effort}`, "-C", cwd, "--json", "--skip-git-repo-check", task];
     let child;
     try {
-      child = this.spawn(this.executable, args, { cwd, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      // Egress proxy scoped to this child only (egress-proxy.js header):
+      // codex reaches the OpenAI API via the local Clash proxy; override or
+      // disable via CODEX_PROXY_URL.
+      const env = { ...process.env, ...egressProxyEnv(this.environment, "CODEX_PROXY_URL") };
+      child = this.spawn(this.executable, args, { cwd, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env });
     } catch (error) {
       emitEvent("error", { kind: "codex_launch_error", message: "codex_launch_error" });
       return launchFailureResult(error?.code);

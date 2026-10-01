@@ -1,6 +1,16 @@
 export const EFFORT_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 export const ANTIGRAVITY_EFFORT_LEVELS = new Set(["low", "medium", "high", "max"]);
 
+// agy model names carry their reasoning tier as a suffix (gemini-3.8-flash-low,
+// gpt-oss-120b-medium, ...). The agy CLI hard-errors with "invalid model
+// selection" when --effort disagrees with that suffix (T5 canary root cause,
+// 2026-10-01), so the dispatcher derives the default from the suffix and
+// rejects explicit mismatches at validation time.
+export function antigravityModelTier(model) {
+  const match = /-(low|medium|high|max)$/.exec(model);
+  return match ? match[1] : null;
+}
+
 // request_id：8–128 URL-safe 字符（unreserved：字母/数字/下划线/连字符）。
 // 高熵生成、网络重试复用同一 id；缺省允许（明确没有安全重试保证）。
 export const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
@@ -39,16 +49,29 @@ export function validateDispatchInput(input, allowedModels) {
   const project = requireShortString(input.project, "project", 80);
   const task = requireShortString(input.task, "task", 8_000);
   const model = requireShortString(input.model, "model", 160);
-  const effort = input.effort === undefined ? "medium" : requireShortString(input.effort, "effort", 20);
+  const models = allowedModels instanceof Set ? allowedModels : allowedModels?.[input.agent];
 
   if (input.agent === "antigravity") {
+    const tier = antigravityModelTier(model);
+    const effort = input.effort === undefined
+      ? (tier ?? "medium")
+      : requireShortString(input.effort, "effort", 20);
     if (!ANTIGRAVITY_EFFORT_LEVELS.has(effort)) {
       throw new DispatcherError("invalid_effort", "effort must be a supported Antigravity effort level (low, medium, high, max)");
     }
-  } else if (!EFFORT_LEVELS.has(effort)) {
+    if (tier !== null && effort !== tier) {
+      throw new DispatcherError("invalid_effort", `effort conflicts with the Antigravity model tier (${model} requires effort=${tier})`);
+    }
+    if (!(models instanceof Set) || !models.has(model)) {
+      throw new DispatcherError("invalid_model", "model is not in the Dispatcher allowlist");
+    }
+    return { agent: input.agent, project, task, model, effort, request_id: validateRequestId(input.request_id) };
+  }
+
+  const effort = input.effort === undefined ? "medium" : requireShortString(input.effort, "effort", 20);
+  if (!EFFORT_LEVELS.has(effort)) {
     throw new DispatcherError("invalid_effort", "effort must be a supported CodeBuddy effort level");
   }
-  const models = allowedModels instanceof Set ? allowedModels : allowedModels?.[input.agent];
   if (!(models instanceof Set) || !models.has(model)) {
     throw new DispatcherError("invalid_model", "model is not in the Dispatcher allowlist");
   }
