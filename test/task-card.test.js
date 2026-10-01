@@ -621,3 +621,106 @@ test("桥接收敛：结构/event.source 校验、首帧运行时固定 origin�
   await opaque.settle();
   assert.equal(opaque.element("status").textContent, "RUNNING");
 });
+
+// 结果区缩略 + 就地展开（微卡 T4-ux）
+async function renderResult(text, { jobId = "job-1", revision = 1, status = "COMPLETED" } = {}) {
+  const card = await makeCard();
+  await card.start();
+  card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: jobId } } });
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ job_id: jobId, status, revision, final_text: text }) } });
+  await card.settle();
+  return card;
+}
+
+test("结果区阈值：>500 字符或 >8 行才可折叠（边界矩阵）", async () => {
+  const cases = [
+    { name: "500 字符整（单行）", text: "a".repeat(500), collapsible: false },
+    { name: "501 字符（单行）", text: "a".repeat(501), collapsible: true },
+    { name: "8 行整（总长 <500）", text: Array.from({ length: 8 }, () => "b".repeat(10)).join("\n"), collapsible: false },
+    { name: "9 行", text: Array.from({ length: 9 }, () => "b".repeat(10)).join("\n"), collapsible: true },
+  ];
+  for (const { name, text, collapsible } of cases) {
+    const card = await renderResult(text);
+    assert.equal(card.element("result_block").hidden, false, name);
+    assert.equal(card.element("result_toggle").hidden, !collapsible, `${name}: 折叠按钮可见性`);
+    if (collapsible) {
+      assert.notEqual(card.element("result").textContent, text, `${name}: 可折叠时应缩略`);
+      assert.equal(card.element("result_toggle").textContent, `展开全文（共 ${text.length} 字符）`);
+    } else {
+      assert.equal(card.element("result").textContent, text, `${name}: 短文本逐字节一致`);
+    }
+  }
+});
+
+test("缩略预览：在不超过 500 的最后一个换行处截断；无换行则硬截 500", async () => {
+  // 前 500 字符内最后一个换行在索引 400 → 在换行处截断（不含换行）
+  const withBreak = await renderResult("a".repeat(400) + "\n" + "b".repeat(300));
+  assert.equal(withBreak.element("result").textContent, "a".repeat(400) + " …");
+  assert.equal(withBreak.element("result_toggle").textContent, "展开全文（共 701 字符）");
+
+  // 无换行 → 硬截前 500 字符
+  const hard = await renderResult("x".repeat(600));
+  assert.equal(hard.element("result").textContent, "x".repeat(500) + " …");
+  assert.equal(hard.element("result_toggle").textContent, "展开全文（共 600 字符）");
+});
+
+test("就地展开：渲染全文并挂载滚动容器类；收起回到缩略", async () => {
+  const text = "y".repeat(600);
+  const card = await renderResult(text);
+  assert.equal(card.element("result").className, "");
+  assert.equal(card.element("result").textContent, "y".repeat(500) + " …");
+
+  card.element("result_toggle").listeners.click();
+  assert.equal(card.element("result").textContent, text);
+  assert.equal(card.element("result").className, "expanded");
+  assert.equal(card.element("result_toggle").textContent, "收起");
+
+  card.element("result_toggle").listeners.click();
+  assert.equal(card.element("result").textContent, "y".repeat(500) + " …");
+  assert.equal(card.element("result").className, "");
+  assert.equal(card.element("result_toggle").textContent, "展开全文（共 600 字符）");
+});
+
+test("同 job_id 刷新保持展开与 scrollTop；切换 job_id 回到缩略默认", async () => {
+  const text = "z".repeat(700);
+  const card = await renderResult(text);
+  card.element("result_toggle").listeners.click();
+  assert.equal(card.element("result").className, "expanded");
+  card.element("result").scrollTop = 321;
+
+  // 同 job_id 快照刷新（revision 递增）→ 保持展开状态与滚动位置
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ status: "COMPLETED", revision: 2, final_text: text }) } });
+  await card.settle();
+  assert.equal(card.element("result").textContent, text, "刷新后仍显示全文");
+  assert.equal(card.element("result").className, "expanded", "刷新后保持展开");
+  assert.equal(card.element("result").scrollTop, 321, "刷新后恢复滚动位置");
+
+  // 切换到不同 job_id → 缩略默认（无展开、无滚动记忆）
+  card.receive({ method: "ui/notifications/tool-input", params: { arguments: { job_id: "job-2" } } });
+  card.receive({ method: "ui/notifications/tool-result", params: { structuredContent: cardTask({ job_id: "job-2", status: "COMPLETED", revision: 1, final_text: text }) } });
+  await card.settle();
+  assert.equal(card.element("result").textContent, "z".repeat(500) + " …");
+  assert.equal(card.element("result").className, "");
+  assert.equal(card.element("result").scrollTop, 0);
+  assert.equal(card.element("result_toggle").textContent, "展开全文（共 700 字符）");
+});
+
+test("短文本：无折叠按钮，textContent 与现状逐字节一致", async () => {
+  const text = "短结果：一行搞定。";
+  const card = await renderResult(text);
+  assert.equal(card.element("result").textContent, text);
+  assert.equal(card.element("result").className, "");
+  assert.equal(card.element("result_toggle").hidden, true);
+  assert.equal(card.element("result_toggle").textContent, "");
+  // 点击不可见按钮无副作用（非折叠文本不改变渲染）
+  card.element("result_toggle").listeners.click();
+  assert.equal(card.element("result").textContent, text);
+});
+
+test("空结果：result_block 保持隐藏且无折叠按钮", async () => {
+  const card = await renderResult("", { status: "COMPLETED" });
+  assert.equal(card.element("result_block").hidden, true);
+  assert.equal(card.element("result").textContent, "");
+  assert.equal(card.element("result_toggle").hidden, true);
+});
+

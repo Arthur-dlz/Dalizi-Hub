@@ -23,6 +23,8 @@
     .result { margin: 0 0 15px; padding: 11px 12px; border-radius: 9px; background: var(--color-background-tertiary, #f5f5f5); }
     .result[hidden] { display: none; }
     .result p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .result p.expanded { max-height: 50vh; overflow-y: auto; }
+    #result_toggle { margin-top: 8px; }
     .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     button { border: 1px solid var(--color-border-default, #d0d0d0); background: var(--color-background-primary, #fff); color: inherit; border-radius: 8px; padding: 7px 12px; cursor: pointer; font: inherit; }
     button:disabled { opacity: .55; cursor: default; }
@@ -52,6 +54,7 @@
     <section id="result_block" class="result" hidden>
       <h2>结果</h2>
       <p id="result"></p>
+      <button id="result_toggle" type="button" hidden></button>
     </section>
     <div class="actions">
       <button id="refresh" type="button" disabled>刷新</button>
@@ -65,12 +68,18 @@
       const fields = Object.fromEntries(['agent', 'project', 'elapsed', 'current_activity', 'requested_model', 'effort', 'last_updated', 'liveness', 'usage', 'result', 'status'].map(id => [id, document.getElementById(id)]));
       const resultBlock = document.getElementById('result_block');
       const usageBlock = document.getElementById('usage_block');
+      const resultToggle = document.getElementById('result_toggle');
       const refreshButton = document.getElementById('refresh');
       const autoBox = document.getElementById('auto_refresh');
       const message = document.getElementById('message');
       const pending = new Map();
       const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
       const AUTO_REFRESH_MS = 3000;
+      const RESULT_PREVIEW_LIMIT = 500; // 缩略态字符上限
+      const RESULT_LINE_LIMIT = 8; // 缩略态行数上限
+      // 结果区就地展开状态（按 job_id 记忆）：刷新保持展开与滚动位置，切换 job 回到缩略默认。
+      const resultExpansion = new Map(); // job_id -> { expanded: boolean, scrollTop: number }
+      let currentResultText = ''; // 当前渲染的完整结果文本（供就地展开/收起复用）
       let nextId = 1;
       let initialized = false;
       let serverTools = false;
@@ -223,11 +232,68 @@
         fields.status.textContent = '—';
         fields.status.className = 'badge';
         fields.result.textContent = '';
+        fields.result.className = '';
+        fields.result.scrollTop = 0;
+        currentResultText = '';
+        resultToggle.hidden = true;
+        resultToggle.textContent = '';
         resultBlock.hidden = true;
         fields.usage.textContent = '';
         usageBlock.hidden = true;
         autoBox.disabled = true;
         message.textContent = jobId ? '正在加载任务…' : '等待任务…';
+      }
+
+      // 结果区缩略/就地展开（微卡 T4-ux）：长文本默认缩略，点击就地展开/收起，不弹窗不跳转。
+      function isCollapsible(text) {
+        return text.length > RESULT_PREVIEW_LIMIT || text.split('\n').length > RESULT_LINE_LIMIT;
+      }
+      function resultPreview(text) {
+        const head = text.slice(0, RESULT_PREVIEW_LIMIT);
+        const lastBreak = head.lastIndexOf('\n');
+        const cut = lastBreak === -1 ? head : head.slice(0, lastBreak);
+        return `${cut} …`;
+      }
+      // 展开中：先把实时滚动位置记回状态，避免重渲染丢位置。
+      function captureResultScroll() {
+        const state = resultExpansion.get(jobId);
+        if (state && state.expanded) state.scrollTop = fields.result.scrollTop ?? 0;
+      }
+      // 按当前 job 的记忆状态渲染结果区：短文本零行为变化；长文本缩略或展开。
+      function applyResult(text) {
+        const state = resultExpansion.get(jobId) ?? { expanded: false, scrollTop: 0 };
+        if (!isCollapsible(text)) {
+          fields.result.textContent = text;
+          fields.result.className = '';
+          fields.result.scrollTop = 0;
+          resultToggle.hidden = true;
+          resultToggle.textContent = '';
+          return;
+        }
+        resultToggle.hidden = false;
+        if (state.expanded) {
+          fields.result.textContent = text;
+          fields.result.className = 'expanded';
+          fields.result.scrollTop = state.scrollTop;
+          resultToggle.textContent = '收起';
+        } else {
+          fields.result.textContent = resultPreview(text);
+          fields.result.className = '';
+          fields.result.scrollTop = 0;
+          resultToggle.textContent = `展开全文（共 ${text.length} 字符）`;
+        }
+      }
+      function toggleResult() {
+        if (jobId === null || !isCollapsible(currentResultText)) return;
+        const state = resultExpansion.get(jobId) ?? { expanded: false, scrollTop: 0 };
+        if (state.expanded) {
+          state.scrollTop = fields.result.scrollTop ?? 0;
+          state.expanded = false;
+        } else {
+          state.expanded = true;
+        }
+        resultExpansion.set(jobId, state);
+        applyResult(currentResultText);
       }
 
       function showTask(task) {
@@ -246,7 +312,9 @@
         fields.usage.textContent = usageLines(task.usage).join('\n');
         usageBlock.hidden = false;
         const result = resultText(task);
-        fields.result.textContent = result;
+        currentResultText = result;
+        captureResultScroll();
+        applyResult(result);
         resultBlock.hidden = result === '';
         status = typeof task.status === 'string' && task.status.length > 0 ? task.status : 'UNKNOWN';
         terminal = TERMINAL_STATUSES.has(status);
@@ -339,6 +407,7 @@
         }
       });
       refreshButton.addEventListener('click', refresh);
+      resultToggle.addEventListener('click', toggleResult);
       // 自动刷新开关仅由用户操作改变；程序只负责启停计时器（A7）。
       autoBox.addEventListener('change', () => {
         updateAuto();

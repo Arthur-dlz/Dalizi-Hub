@@ -281,10 +281,30 @@ test("turn.completed usage maps the five fields and a provider total wins", asyn
     assert.equal(metrics.reasoning_tokens.source_field, "usage.reasoning_output_tokens");
     assert.equal(metrics.total_tokens.value, 200, "provider total is used as-is");
     assert.equal(metrics.total_tokens.quality, "reported");
-    assert.equal(metrics.cache_write_tokens.value, null, "codex reports no cache-write field: absent is not zero");
+    assert.equal(metrics.cache_write_tokens.value, null, "this fixture carries no cache-write field: absent is not zero");
     assert.equal(metrics.cache_write_tokens.quality, "unavailable");
     assert.equal(metrics.cache_write_tokens.unavailable_reason, "source_field_absent");
     assert.equal(metrics.job_output_tokens_per_second.value, null, "no wall duration observed -> throughput unavailable");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// T5-cal (2026-10-01): codex 0.159.2 reports cache_write_input_tokens in
+// turn.completed.usage (live probe sample), which the map previously missed.
+test("turn.completed usage reports cache_write_input_tokens when codex sends it", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-codex-"));
+  try {
+    const { run } = await runWithEvents(directory, [
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "cache-write-ok" } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 202633, cached_input_tokens: 187520, cache_write_input_tokens: 4096, output_tokens: 443, reasoning_output_tokens: 91 } }),
+    ]);
+    assert.equal(run.status, "COMPLETED", run.error);
+    const metric = run.usage.metrics.cache_write_tokens;
+    assert.equal(metric.value, 4096);
+    assert.equal(metric.quality, "reported");
+    assert.equal(metric.source_field, "usage.cache_write_input_tokens");
+    assert.equal(metric.unavailable_reason, undefined);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

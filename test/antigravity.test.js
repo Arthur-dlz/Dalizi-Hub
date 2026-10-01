@@ -394,14 +394,18 @@ test("Antigravity runner maps step_update tool sequence to activity events and n
 test("Antigravity runner maps result usage to canonical metrics without double counting", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-agy-usage-"));
   try {
-    // step_update usage is NOT aggregated (per task card); result usage replaces
-    // the whole aggregation, and a replayed result event must not add on top.
-    const usage = { input_tokens: 10, output_tokens: 5, thinking_tokens: 2, cache_read_tokens: 3, total_tokens: 15, duration_seconds: 1.5, num_turns: 1 };
+    // Live stream shape (sched-agy-probe.log, 2026-09-30): token metrics live in
+    // result.usage, while duration_seconds and num_turns are siblings of `usage`
+    // at the result payload level. step_update usage is NOT aggregated (per task
+    // card); result usage replaces the whole aggregation, and a replayed result
+    // event must not add on top.
+    const usage = { input_tokens: 10, output_tokens: 5, thinking_tokens: 2, cache_read_tokens: 3, total_tokens: 15 };
+    const result = { status: "SUCCESS", response: "u", duration_seconds: 6.118, num_turns: 1, usage };
     const streamOutput = [
       JSON.stringify({ event: "init", init: { model: "gemini-3.8-flash-high" } }),
       JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", usage: { input_tokens: 90, output_tokens: 9, total_tokens: 99 } } }),
-      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "u", usage } }),
-      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "u", usage } }),
+      JSON.stringify({ event: "result", result }),
+      JSON.stringify({ event: "result", result }),
     ].join("\n");
     const script = "console.log(" + JSON.stringify(streamOutput) + ");";
     const { runner } = await fakeAntigravity(directory, script);
@@ -417,8 +421,12 @@ test("Antigravity runner maps result usage to canonical metrics without double c
     assert.equal(metrics.cache_read_tokens.value, 3);
     assert.equal(metrics.reasoning_tokens.value, 2);
     assert.equal(metrics.reasoning_tokens.source_field, "result.usage.thinking_tokens");
-    assert.equal(metrics.wall_duration_ms.value, 1500);
+    // duration_seconds is reported in seconds and surfaces in ms (T5-cal).
+    assert.equal(metrics.wall_duration_ms.value, 6118);
+    assert.equal(metrics.wall_duration_ms.quality, "reported");
+    assert.equal(metrics.wall_duration_ms.source_field, "result.duration_seconds");
     assert.equal(metrics.num_turns.value, 1);
+    assert.equal(metrics.num_turns.source_field, "result.num_turns");
     assert.equal(metrics.cache_write_tokens.value, null);
     assert.equal(metrics.cache_write_tokens.unavailable_reason, "source_field_absent");
     assert.deepEqual(run.usage.inclusion, { input_includes_cache: null, output_includes_reasoning: true });
@@ -426,6 +434,33 @@ test("Antigravity runner maps result usage to canonical metrics without double c
 
     // Replay never doubles: total stays the reported value, not summed.
     assert.equal(metrics.total_tokens.value, 15);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// T5-cal (2026-10-01): a missing duration_seconds must stay unavailable, never a
+// fabricated zero, and the dependent throughput stays unavailable too.
+test("Antigravity runner keeps wall_duration_ms unavailable when the result omits duration_seconds", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-agy-nodur-"));
+  try {
+    const streamOutput = [
+      JSON.stringify({ event: "init", init: { model: "gemini-3.8-flash-high" } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "no-duration", usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } }),
+    ].join("\n");
+    const script = "console.log(" + JSON.stringify(streamOutput) + ");";
+    const { runner } = await fakeAntigravity(directory, script);
+    const run = await runner.run({ cwd: directory, model: "gemini-3.8-flash-high", effort: "high", task: "read" });
+    assert.equal(run.status, "COMPLETED", run.error);
+
+    const metrics = run.usage.metrics;
+    assert.equal(metrics.wall_duration_ms.value, null);
+    assert.equal(metrics.wall_duration_ms.quality, "unavailable");
+    assert.equal(metrics.wall_duration_ms.unavailable_reason, "source_field_absent");
+    assert.equal(metrics.num_turns.value, null);
+    assert.equal(metrics.num_turns.unavailable_reason, "source_field_absent");
+    assert.equal(metrics.job_output_tokens_per_second.value, null);
+    assert.equal(metrics.job_output_tokens_per_second.unavailable_reason, "wall_duration_ms_unavailable");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

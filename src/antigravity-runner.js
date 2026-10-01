@@ -20,16 +20,22 @@ const PATH_FALLBACK = "agy";
 // undeclared (null) — unproven is not declared. cache_write has no observed
 // field and stays unavailable. agy always reports total_tokens, so the derived
 // total never overrides the provider value.
+//
+// Paths are relative to the AGY `result` payload (not to its `usage` object):
+// the live stream places token metrics under result.usage, while duration_seconds
+// and num_turns are siblings of `usage` at the payload level. Mapping against
+// result.usage alone silently missed the timing fields (T5 canary a04 snapshot:
+// wall_duration_ms unavailable with source_field result.usage.duration_seconds).
 const USAGE_FIELD_MAP = [
-  { name: "input_tokens", paths: ["input_tokens"], unit: "tokens" },
-  { name: "output_tokens", paths: ["output_tokens"], unit: "tokens" },
-  { name: "total_tokens", paths: ["total_tokens"], unit: "tokens" },
-  { name: "cache_read_tokens", paths: ["cache_read_tokens"], unit: "tokens" },
-  { name: "cache_write_tokens", paths: ["cache_write_tokens"], unit: "tokens" },
-  { name: "reasoning_tokens", paths: ["thinking_tokens", "reasoning_tokens"], unit: "tokens" },
+  { name: "input_tokens", paths: ["usage.input_tokens"], unit: "tokens" },
+  { name: "output_tokens", paths: ["usage.output_tokens"], unit: "tokens" },
+  { name: "total_tokens", paths: ["usage.total_tokens"], unit: "tokens" },
+  { name: "cache_read_tokens", paths: ["usage.cache_read_tokens"], unit: "tokens" },
+  { name: "cache_write_tokens", paths: ["usage.cache_write_tokens"], unit: "tokens" },
+  { name: "reasoning_tokens", paths: ["usage.thinking_tokens", "usage.reasoning_tokens"], unit: "tokens" },
   { name: "wall_duration_ms", paths: ["duration_seconds"], unit: "ms", scale: 1000 },
   { name: "num_turns", paths: ["num_turns"], unit: "turns" },
-  { name: "total_cost_usd", paths: ["total_cost_usd"], unit: "usd" },
+  { name: "total_cost_usd", paths: ["usage.total_cost_usd"], unit: "usd" },
 ];
 
 // Inclusion semantics declared for the installed agy version (1.2.14).
@@ -59,18 +65,18 @@ function firstString(...values) {
   return null;
 }
 
-// Maps one AGY usage dict onto canonical metrics. Every canonical name yields
-// an entry: a hit is reported with the concrete source_field it was found at; a
-// miss is stored as null + unavailable_reason (absent is not zero). `scale`
-// converts a source unit (agy reports duration in seconds) to the canonical
-// unit (ms).
-function mapUsageDict(usage, { scope, prefix }) {
+// Maps the AGY `result` payload onto canonical metrics. Every canonical name
+// yields an entry: a hit is reported with the concrete source_field it was found
+// at; a miss is stored as null + unavailable_reason (absent is not zero).
+// `scale` converts a source unit (agy reports duration in seconds) to the
+// canonical unit (ms).
+function mapUsageDict(payload, { scope, prefix }) {
   const mapped = {};
   for (const { name, paths, unit, scale } of USAGE_FIELD_MAP) {
     let hit = null;
     let hitPath = null;
     for (const candidatePath of paths) {
-      const candidate = readPath(usage, candidatePath);
+      const candidate = readPath(payload, candidatePath);
       if (isCount(candidate)) {
         hit = candidate;
         hitPath = candidatePath;
@@ -315,11 +321,13 @@ export class AntigravityRunner {
       interpreter.observe(event);
       if (interpreter.conversationId) sessionId = interpreter.conversationId;
 
-      // result.usage is the authoritative terminal usage for the invocation:
+      // result payload is the authoritative terminal usage for the invocation:
       // it replaces the whole aggregation, so a replayed result event never
-      // double counts. Per the task card, step_update usage is not aggregated.
+      // double counts. The whole payload (not just its `usage`) is mapped so the
+      // payload-level duration_seconds/num_turns are captured too. Per the task
+      // card, step_update usage is not aggregated.
       if (event.event === "result" && isPlainObject(event.result?.usage)) {
-        aggregator.applyResultUsage(mapUsageDict(event.result.usage, { scope: "session", prefix: "result.usage" }));
+        aggregator.applyResultUsage(mapUsageDict(event.result, { scope: "session", prefix: "result" }));
         emitEvent("usage", aggregator.snapshot(), event);
       }
 

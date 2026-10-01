@@ -14,15 +14,15 @@ const PATH_FALLBACK = "codex";
 // Codex turn.completed.usage -> canonical metrics. Candidate source paths are
 // tried in order; the first finite non-negative hit wins and is recorded as the
 // metric's source_field. A miss is stored as null + unavailable_reason, because
-// absent is not zero. codex-cli 0.158 reports cached_input_tokens and
-// reasoning_output_tokens but no cache-write field, so cache_write_tokens stays
-// unavailable until a real sample proves otherwise.
+// absent is not zero. codex-cli 0.158 reported no cache-write field, but a real
+// 0.159.2 sample (T5 canary probe, 2026-10-01) shows turn.completed.usage
+// carrying cache_write_input_tokens, so that path is covered too.
 const USAGE_FIELD_MAP = [
   { name: "input_tokens", paths: ["input_tokens"], unit: "tokens" },
   { name: "output_tokens", paths: ["output_tokens"], unit: "tokens" },
   { name: "total_tokens", paths: ["total_tokens"], unit: "tokens" },
   { name: "cache_read_tokens", paths: ["cached_input_tokens", "cache_read_input_tokens"], unit: "tokens" },
-  { name: "cache_write_tokens", paths: ["cache_write_tokens", "cache_creation_input_tokens"], unit: "tokens" },
+  { name: "cache_write_tokens", paths: ["cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens"], unit: "tokens" },
   { name: "reasoning_tokens", paths: ["reasoning_output_tokens", "reasoning_tokens"], unit: "tokens" },
 ];
 
