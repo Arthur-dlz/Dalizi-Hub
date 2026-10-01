@@ -96,10 +96,10 @@ error 结构扩展：`{kind, message, diagnostics?}`；恢复相关 kind：`inte
 | `src/recovery.js`（新） | 非终态扫描分类（§5.4）；RECOVERY_REQUIRED 保留占用 | T2 |
 | `scripts/resolve-recovery.js`（新） | 人工解除命令：`--job --confirm --evidence`；写审计；FAILED(interrupted_confirmed) + 释放占用；`package.json` 增加 `resolve-recovery` script | T2 |
 | `src/workbuddy-runner.js` | 增量 stream-json 解析；emit started/activity/usage/result；WB usage 映射（安装版本样本校准） | T3a |
-| `src/codex-runner.js` | 增量事件解析；turn.completed.usage 映射；保留可信路径/argv 约束 | T3b |
-| `src/antigravity-runner.js` | 增量 step_update/result 解析；usage 映射；**权限 flag 行为按 T2 决策记录执行，不擅自改动** | T3c |
+| `src/codex-runner.js` | 增量事件解析；turn.completed.usage 映射（`cache_write_tokens` 候选路径按序为 `cache_write_tokens`/`cache_creation_input_tokens`/`cache_write_input_tokens`）；保留可信路径/argv 约束 | T3b（T5cal 校准） |
+| `src/antigravity-runner.js` | 增量 step_update/result 解析；usage 映射（路径相对 `result` payload：token 带 `usage.` 前缀，`duration_seconds`/`num_turns` 为 payload 层裸路径）；**权限 flag 行为按 T2 决策记录执行，不擅自改动** | T3c（T5cal 校准） |
 | `src/usage.js`（新） | 指标语义对象与聚合规则（§5.6），三 runner 共用 | T3a（T3b/c 只调用） |
-| `src/task-card.html` | 自动刷新开关不再被快照重置（仅用户操作改变）；revision/job_id 防旧响应；查询失败保留上次成功快照+错误提示+可重试；RECOVERY_REQUIRED 明确展示；postMessage 收敛（§8） | T4 |
+| `src/task-card.html` | 自动刷新开关不再被快照重置（仅用户操作改变）；revision/job_id 防旧响应；查询失败保留上次成功快照+错误提示+可重试；RECOVERY_REQUIRED 明确展示；结果区缩略与就地展开（§5.8）；postMessage 收敛（§8） | T4（T4ux 增补） |
 | `src/task-card.js` | 资源注册随快照 v2 字段调整 | T4 |
 | `src/http-mcp-server.js` | 不改（认证/loopback/Origin/body 限制保留） | — |
 | `src/project-registry.js` | 不改（受控目标解析保留） | — |
@@ -141,9 +141,21 @@ error 结构扩展：`{kind, message, diagnostics?}`；恢复相关 kind：`inte
 
 每指标：`{value, unit, scope, kind, source_field, quality, unavailable_reason?}`。规则：null≠0（源明确报零才存 0）；同一 scope 的 snapshot 替换旧值，唯一 delta 才累加；最终 result 累计替代临时聚合，不重复加；input/cache/output/reasoning 包含关系由 adapter 按安装版本声明，关系不明不推导合计；provider total 优先；后台子任务与主任务重叠无证据则分列标"覆盖不明"；吞吐命名区分任务平均输出吞吐/模型吞吐/生成速度，证据不足即不可观测。账号额度（antigravity-usage.js）与 job usage 严格分离。
 
+映射源校准（T5cal）：codex `cache_write_tokens` 的候选路径按序为 `cache_write_tokens` → `cache_creation_input_tokens` → `cache_write_input_tokens`（0.159.x 实测 `turn.completed.usage` 报 `cache_write_input_tokens`；前两项优先级不变）；agy 的映射源对象为 `result` payload——token 字段位于 `result.usage.*`，而 `duration_seconds`（scale 1000 → `wall_duration_ms`）与 `num_turns` 是与 `usage` 同级的 payload 裸路径，故其 `source_field` 前缀为 `result.`（非 `result.usage.`）。
+
 ### 5.7 卡片桥接收敛
 
 postMessage 目标 origin 不用 `'*'`：P0 查明宿主 origin 后写死白名单；查明前过渡期：校验消息结构、job_id 绑定、event.source，并在卡片内标注。A1 证据需包含实际生效的校验方式。
+
+### 5.8 结果区缩略与就地展开（T4ux）
+
+结果区长文本默认缩略、可就地展开/收起，不弹窗不跳转；短文本零行为变化。
+
+- **可折叠判定**：文本长度 > `RESULT_PREVIEW_LIMIT`（500）或行数 > `RESULT_LINE_LIMIT`（8）即可折叠；行数用 `split('\n').length` 计，**文本以换行结尾会多计一行**（边界口径已裁决接受）。
+- **缩略预览**：取前 500 字符，在其中最后一个换行处截断；无换行则硬截 500；末尾拼接 ` …`。
+- **展开态**：全文渲染并挂载 `.expanded`（`max-height: 50vh; overflow-y: auto`），保留滚动位置。
+- **状态保持**：`resultExpansion`（`Map`，job_id → `{expanded, scrollTop}`）按 job 记忆——同 job_id 刷新保持展开与 scrollTop，切换 job 回到缩略默认；展开中重渲染前先把实时 scrollTop 记回状态，避免丢位置。
+- **空结果**：`result_block` 保持隐藏且无折叠按钮（不回归）。
 
 ## 6. 测试策略（A1–A8 映射）
 
@@ -158,6 +170,10 @@ postMessage 目标 origin 不用 `'*'`：P0 查明宿主 origin 后写死白名�
 | A7 刷新稳健 | UI 行为测试（关自动刷新→手动刷新→RUNNING 快照仍关）+ Desktop 实测 | T4 → T5 |
 | A8 完整链路 | 每启用 CLI 一个受控 canary job 全链路记录 | T5（需用户授权） |
 
+**全量测试基线**：`node --test --test-concurrency=1` = **176/176**。演变口径：168（T5 收官）→ +6（T4ux）→ +2（T5cal 净增）= 176。
+
+**T4ux/T5cal 新增用例映射**（净 +8）：A7 UI 行为 +6（结果区阈值边界矩阵、缩略预览截断、就地展开/收起、同 job_id 刷新保持与切换重置、短文本零行为变化、空结果隐藏不回归）；A4 用量准确 +2（codex `cache_write_input_tokens` 命中并记 `source_field`；agy 缺 `duration_seconds` 时 `wall_duration_ms` 保持 unavailable 不补零）。另 A3 有 1 例按 agy 真实流形状改写（净 0）。
+
 源码单测、CLI 实测、Desktop 实测分开报告；静态 HTML 检查不冒充宿主验收。
 
 ## 7. 施工卡索引与并发规则
@@ -171,6 +187,12 @@ postMessage 目标 origin 不用 `'*'`：P0 查明宿主 origin 后写死白名�
 | T3b/T3c | P2 Codex / AGY adapter | T2 + **T3a 接口已回传冻结**（只消费 usage.js/stream-json） | 彼此并行、T4 |
 | T4 | P3 任务卡修复 | T1（快照字段）；建议 T2 后启动以展示 RECOVERY_REQUIRED | T3a/b/c |
 | T5 | P4 受控端到端 canary | T2+T3+T4 全完成 + 用户显式授权 | 无 |
+| T4ux | P3 结果区缩略/就地展开（T4 后续微卡） | T4 | — |
+| T5cal | P4 usage 映射校准（codex cache_write / agy payload 层） | T3b、T3c | — |
+| OPS | codex 独立 CLI 固定路径（环境变更，仓库零改动） | T3b | — |
+| DOCS | IMPLEMENTATION.md 同步三卡变更（收口卡） | T4ux、T5cal、OPS | — |
+
+**收官状态（2026-10-01）**：T4ux、T5cal、OPS 均验收 PASS，commit `7872fc6`；DOCS（本卡）施工中。
 
 **执行序**：T0 ∥ 全程；T1 → T2 → T3a →（T3b ∥ T3c）；T4 在 T1 后可起步、与 T3 系并行；T5 最后。
 
