@@ -1,3 +1,19 @@
+# ⚠️ 已退役（2026-10-01）
+
+> **本文件已退役，不再作为接续入口。请勿据以作业。**
+>
+> - **退役日期：** 2026-10-01
+> - **退役原因：** 本文件所述的候选分支、基线 HEAD、测试数与验收状态**已全部过时，且与 V1 竣工现状完全相反**（原文称 A1–A8「尚未完成验证/真实验收」、`npm test` 63 pass、HEAD `87e42ec9`、branch `fix/new-pc-local-recovery-r1`、蓝图 SHA256 `6B4C7306…`；实际 V1 已竣工，A1–A8 全绿，`npm test` 176/176 pass，HEAD `0ecc963`，蓝图 SHA256 `048BB68F…C01662`）。
+> - **权威入口（以此为准）：**
+>   - 生产运维规程：[`../impl/COMMANDER-RUNBOOK.md`](../impl/COMMANDER-RUNBOOK.md)
+>   - 主控交接：[`../impl/HANDOFF-2026-10-01-commander.md`](../impl/HANDOFF-2026-10-01-commander.md)
+>   - 需求与验收：[`../v1-mcp-agent-dispatch-blueprint.md`](../v1-mcp-agent-dispatch-blueprint.md) §11
+>   - 竣工盘点：[`V1-POST-CLOSEOUT-INVENTORY-2026-10-01.md`](V1-POST-CLOSEOUT-INVENTORY-2026-10-01.md)
+> - **明确警示：** 下文为 **2026-09 历史快照**，其中的 **HEAD、分支名、测试数、验收状态均不得据以作业**。
+> - **死链/续做指引纠正：** 下文「五分钟阅读顺序」中 [`VERIFY_AND_CONTINUE.md`](VERIFY_AND_CONTINUE.md) 亦已同步退役；「当前不可声称的事项」中「A1–A8 尚未按蓝图完成验证/真实验收」的表述已作废。下方正文原样保留，仅供历史回溯。
+
+---
+
 # V1 refactor handoff: start here
 
 > 给下一位 Agent 的五分钟接手入口。本文是导航和交接事实，不是第二份需求文档。

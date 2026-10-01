@@ -1,3 +1,19 @@
+# ⚠️ 已退役（2026-10-01）
+
+> **本文件已退役，不再作为续做入口。请勿据以作业。**
+>
+> - **退役日期：** 2026-10-01
+> - **退役原因：** 本文件所述的候选分支、基线 HEAD、测试数与验收状态**已全部过时，且与 V1 竣工现状完全相反**（原文称预期候选 HEAD `87e42ec9`、branch `fix/new-pc-local-recovery-r1`、`npm test` 63 pass、A1–A8「尚未按蓝图完成验证/真实验收」；实际 V1 已竣工，A1–A8 全绿，`npm test` 176/176 pass，HEAD `0ecc963`）。
+> - **权威入口（以此为准）：**
+>   - 生产运维规程：[`../impl/COMMANDER-RUNBOOK.md`](../impl/COMMANDER-RUNBOOK.md)
+>   - 主控交接：[`../impl/HANDOFF-2026-10-01-commander.md`](../impl/HANDOFF-2026-10-01-commander.md)
+>   - 需求与验收：[`../v1-mcp-agent-dispatch-blueprint.md`](../v1-mcp-agent-dispatch-blueprint.md) §11
+>   - 竣工盘点：[`V1-POST-CLOSEOUT-INVENTORY-2026-10-01.md`](V1-POST-CLOSEOUT-INVENTORY-2026-10-01.md)
+> - **明确警示：** 下文为 **2026-09 历史快照**，其中的 **HEAD、分支名、测试数、验收状态均不得据以作业**。
+> - **续做指引纠正：** 下文「按蓝图推进的切片」与「暂不可接受为 PASS 的项目」所列待办与验证边界，在 V1 竣工后已不适用；接续工作请改按上方权威入口。
+
+---
+
 # Verify and continue
 
 所有开发范围、接口、优先级和验收均由 [`../v1-mcp-agent-dispatch-blueprint.md`](../v1-mcp-agent-dispatch-blueprint.md) 决定。本文件只记录安全接手顺序和便于恢复工作的切片。

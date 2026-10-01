@@ -1,6 +1,6 @@
 # OPS-codex-standalone：独立 Codex CLI 稳定路径安装（调研 + 安装 + 验证，不含配置切换）
 
-阶段：运维加固 ｜ 依赖：无 ｜ 并行：可与任何卡并行（不碰仓库）｜ 状态：待施工
+阶段：运维加固 ｜ 依赖：无 ｜ 并行：可与任何卡并行（不碰仓库）｜ 状态：验收 PASS（全线收官；证据：COMMANDER-RUNBOOK.md §2 OPS 行）
 来源：证据包 §3.4 长期建议——生产 dispatcher 当前消费桌面版 Codex（`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`），hash 目录随自动升级轮换（0.158→0.159.2 已炸过一次，T5 排雷）。目标 = 装一份**不自动升级、路径永久稳定**的独立 Codex CLI，供 bridge 改指。
 
 ---

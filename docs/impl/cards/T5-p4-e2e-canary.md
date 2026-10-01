@@ -1,6 +1,6 @@
 # T5：P4 受控端到端 canary（需用户显式授权后启动）
 
-阶段：P4 ｜ 依赖：T2+T3a/b/c+T4 全部 RESULT=PASS + 用户 canary 授权 + 独立 canary 项目就绪 ｜ 并行：无（最后执行） ｜ 状态：待授权
+阶段：P4 ｜ 依赖：T2+T3a/b/c+T4 全部 RESULT=PASS + 用户 canary 授权 + 独立 canary 项目就绪 ｜ 并行：无（最后执行） ｜ 状态：验收 PASS（证据：COMMANDER-RUNBOOK.md §2 T5 行）
 设计锚点：蓝图 §10 A8、§6 Desktop 体验；IMPLEMENTATION.md §6
 
 ## 目标

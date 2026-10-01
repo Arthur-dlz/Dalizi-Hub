@@ -1,6 +1,6 @@
 # T5-cal：usage 映射校准（codex cache_write + agy duration 链路）
 
-阶段：P4-校准 ｜ 依赖：T5（已完成，证据包 §5）｜ 并行：可与 T4-ux 并行（文件不相交）｜ 状态：待施工
+阶段：P4-校准 ｜ 依赖：T5（已完成，证据包 §5）｜ 并行：可与 T4-ux 并行（文件不相交）｜ 状态：验收 PASS（证据：COMMANDER-RUNBOOK.md §2 T5cal 行）
 来源：`docs/impl/e2e-evidence/T5-canary-evidence.md` §5 遗留校准项 1 与 5（真实样本驱动）。
 
 ---
