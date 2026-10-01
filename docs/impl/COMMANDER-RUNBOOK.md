@@ -41,6 +41,9 @@
 | T5cal usage 校准 | ✅ 验收 PASS | deepseek-v4.1-flash | 主控四件套核验（10-01 新主控）：归属精确 4 文件；cache_write_input_tokens 在码；断点=映射源对象层级（result 层），usage.js 零改动证实无断点；样本只读扫描全过 |
 | OPS codex 独立 CLI | ✅ 全线收官 | deepseek-v4.1-flash | 主控亲验（10-01）：exe 0.159.3/SHA256 与窗口报一致/`--skip-git-repo-check` 在/PATH·npm prefix·桌面版零改动；**接续已完成**：bridge 改指真 exe（.bak-20261001-ops 留档）+看门狗重启（新 PID 29116）+canary c01 PASS（cache_write_input_tokens live 透出） |
 | DOCS impl 同步 | ✅ 验收 PASS | deepseek-v4.1-flash | 主控四件套核验（10-01）：归属精确 1 文件；全量 176/176 亲跑；§4/§5.6/§5.8/§6/§7 同步内容与代码事实逐条相符；基线偏离披露属实（主控并行产物）裁决接受 |
+| 盘点+P1–P4 | ✅ 验收 PASS | deepseek（主控角色）+子窗口 | 用户委任盘点；主控（kimi）复核 9 文件全 PASS；commit `7a913e7`；窗口纠错成立（取消边界=蓝图 §1:24/§5:103）；瑕疵留档（台账 62=45+15+2 漏记等 3 项） |
+| OPS2 README+操作手册 | ✅ 验收 PASS | deepseek-v4.1-flash | 主控四件套核验（10-01）：归属精确 2 文件；全量 176/176 亲跑；README/OPERATIONS 与代码事实逐条相符；两处锚点纠偏（PT1M 轮询、agent allowlist 在 contracts.js:45）经主控复核成立裁决接受；bridge 白名单零违规 |
+| UX 推演问题集 | 📥 已收待决 | deepseek（主控角色） | `docs/handoff/PROGRESS-UX-FINDINGS-2026-10-01.md`：9 场景矩阵+横切发现 A–F+Q1–Q4 决策请求；零代码协议已由主控固化进 OPERATIONS §3.3.1；Q1/Q2/Q4 待用户拍板是否立卡，Q3 多实例部署届时再说 |
 
 顺序：T3a ∥ T3c 双开 →（Codex 路径到手）T3b → 三卡全 PASS（已达成）→ **T6 emit 接线（已达成 2026-09-30，技术 PASS/纪律留档见当日日志 18:30）** → 全量绿复核（已构成：窗口三连跑+主控亲跑 155/155）→ **部署（停 V0 PID 25820 已授权；启 V1 已完成，生产 PID 29116 @ `127.0.0.1:18490`）** → **T5 端到端 canary（已达成：验收 PASS，commit `2ccf347` 已 push）**。
 
