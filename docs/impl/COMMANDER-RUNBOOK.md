@@ -22,7 +22,7 @@
 | `.workbuddy/memory/` | 日志与长期记忆（跨窗口接力通道） |
 | `D:\3-huancun\dlz-r2-probe\T0-p0-host-capability-report.md` | T0 宿主能力报告（§3.3 = live 实测七步序列） |
 
-代码基线（2026-10-01 收官口径）：分支 `main`，HEAD `7872fc6`（已 push 同步 origin/main；三卡+交接文档 11 路径）；工作区仅 DOCS 新卡未跟踪（待其施工后一并 commit）。当前 `npm test` 应为 **176/176**（168 + T4ux 6 + T5cal 2）。**全部施工卡（T1-T4+T3a/b/c+T5+T6+T4ux+T5cal+OPS）完成并验收；V1 生产在跑（dispatcher PID 29116，bridge 托管 dispatcher-only，tunnel 休眠，看门狗在岗）；codex 已改指 standalone 0.159.3 固定路径（自动升级免疫）；下一闸=T4ux 用户目视 + DOCS 卡验收**。
+代码基线（2026-10-01 V1 整体收官）：分支 `main`，HEAD `4a8374f`（已 push 同步 origin/main）。当前 `npm test` 应为 **176/176**（168 + T4ux 6 + T5cal 2）。**V1 整体收官：A1–A8 验收矩阵全绿（A1 刷新原位更新 10-01 13:14 用户目视闭合）；生产在跑（dispatcher PID 29116，bridge 托管 dispatcher-only，tunnel 休眠，看门狗在岗）；codex=standalone 0.159.3 固定路径。无在途施工卡；长期项=bridge 独立版本化、agy wall_duration_ms live 复验（随下次 agy canary）**。
 
 ## 2. 卡片状态与喂卡计划（含模型配置）
 
@@ -36,7 +36,7 @@
 | T3c AGY adapter | ✅ 验收 PASS | glm-5.3-flash | 分支1 实锤；skip-permissions 已移除；决策文档 §6 有证伪修正；探针工件 `D:\3-huancun\dlz-agy-probe\` |
 | T3b Codex adapter | ✅ 验收 PASS | deepseek-v4-flash | emit 三 runner 口径一致；A5 flake 归因见 §6 |
 | T5 端到端 canary | ✅ 验收 PASS | glm-5.3-flash | 主控四件套核验（10-01）；三真 bug+一地雷修复；168/168；commit `2ccf347` 已 push |
-| T4ux 结果区缩略 | ✅ 验收 PASS | deepseek-v4.1-flash | 主控四件套核验（10-01 新主控）：归属精确 2 文件；全量 176/176+定向 54/54；500/8 阈值+Map 状态保持+50vh 在码；尾部换行边界口径已裁决接受；**待用户目视** |
+| T4ux 结果区缩略 | ✅ 全线收官 | deepseek-v4.1-flash | 主控四件套核验（10-01 新主控）：归属精确 2 文件；全量 176/176+定向 54/54；500/8 阈值+Map 状态保持+50vh 在码；尾部换行边界口径已裁决接受；**用户目视通过（10-01 13:14：缩略/展开/刷新保持三卡逐一过目）→ A1 闭合** |
 | T5cal usage 校准 | ✅ 验收 PASS | deepseek-v4.1-flash | 主控四件套核验（10-01 新主控）：归属精确 4 文件；cache_write_input_tokens 在码；断点=映射源对象层级（result 层），usage.js 零改动证实无断点；样本只读扫描全过 |
 | OPS codex 独立 CLI | ✅ 全线收官 | deepseek-v4.1-flash | 主控亲验（10-01）：exe 0.159.3/SHA256 与窗口报一致/`--skip-git-repo-check` 在/PATH·npm prefix·桌面版零改动；**接续已完成**：bridge 改指真 exe（.bak-20261001-ops 留档）+看门狗重启（新 PID 29116）+canary c01 PASS（cache_write_input_tokens live 透出） |
 | DOCS impl 同步 | ✅ 验收 PASS | deepseek-v4.1-flash | 主控四件套核验（10-01）：归属精确 1 文件；全量 176/176 亲跑；§4/§5.6/§5.8/§6/§7 同步内容与代码事实逐条相符；基线偏离披露属实（主控并行产物）裁决接受 |
