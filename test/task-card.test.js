@@ -166,7 +166,7 @@ test("the UI resource constants, Chinese copy, and Dispatcher field mapping are 
   const html = await readTaskCardHtml();
   assert.match(html, /<html lang="zh-CN">/);
   for (const copy of [
-    "大力子任务卡", "执行 Agent", "项目", "已运行", "当前活动", "模型", "思考强度", "最后更新", "心跳/观察", "用量", "结果",
+    "大狸子任务卡", "执行 Agent", "项目", "已运行", "当前活动", "模型", "思考强度", "最后更新", "心跳/观察", "用量", "结果",
     "刷新", "自动刷新（3秒）", "任务排队中，状态将自动刷新。", "任务执行中，状态将自动刷新。", "任务状态将自动刷新。",
     "任务排队中，可手动刷新或勾选自动刷新。", "任务执行中，可手动刷新或勾选自动刷新。", "任务状态可手动刷新，或勾选自动刷新。",
     "任务已结束，自动刷新已停止。", "正在加载任务…", "等待任务…", "不可观测（未收到用量指标）", "RECOVERY_REQUIRED",
@@ -231,7 +231,7 @@ test("render_task_card is registered read-only, serves the resource, and mirrors
     assert.equal(read.contents[0].uri, TASK_CARD_RESOURCE_URI);
     assert.equal(read.contents[0].mimeType, TASK_CARD_MIME_TYPE);
     assert.equal(read.contents[0].text, await readTaskCardHtml());
-    assert.ok(read.contents[0].text.includes("大力子任务卡"));
+    assert.ok(read.contents[0].text.includes("大狸子任务卡"));
 
     const receipt = JSON.parse((await client.callTool({
       name: "dispatch_task",
@@ -1390,11 +1390,12 @@ test("CH3 board widget：tool-result 带凭据时 SSE 优先建流，帧合并�
   assert.match(card.className, /job-row/, "任务行卡类名");
   assert.equal(board.element("stage-active").dataset.live, "true", "执行中阶段灯应点亮");
   assert.equal(board.element("count-active").textContent, "1", "阶段计数应同步");
-  assert.match(card.querySelector(".job-line b").nextSibling.textContent, /^10s$/, "已运行必须走秒");
+  // ZC1 二轮行卡结构：摘要行 .row-elapsed 承载「已运行 Ns」走秒文本（原位更新，不整树重渲）
+  assert.equal(card.querySelector(".row-elapsed").textContent, "已运行 10s", "已运行必须走秒");
   assert.match(card.textContent, /进程 ALIVE/, "进程级字段按 roster 风格嵌套展示");
   board.advance(1000);
   board.elapsedTick();
-  assert.equal(card.querySelector(".job-line b").nextSibling.textContent, "11s", "走秒每秒重算");
+  assert.equal(card.querySelector(".row-elapsed").textContent, "已运行 11s", "走秒每秒重算");
   assert.equal(board.toolCalls().length, 0, "SSE 通道不得走 tools/call");
 });
 

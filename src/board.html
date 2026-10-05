@@ -5,13 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DLZ看板</title>
   <style>
-    /* 看板页（P6 ZC1：ZCode RunPhaseList 视觉语言 —— 垂直 spine 阶段带 + 任务行卡）。
+    /* 看板页（P6 ZC1 二轮：ZCode 简洁交互语言 —— 收拢优先，点击展开）。
        数据通道与降级逻辑（EventSource 直连 / dlz://board 资源轮询 / tool-result /
        setChannel 诚实标注 / dispose 清理）与 P5 CH2/CH3 完全一致，一行未动；
-       本文件仅重构「渲染层 + 样式」，DLZ 语义 → ZCode 视觉映射：
-         - 三态阶段带 = 组灯（stage-light）+ 阶段名 + 计数；垂直 spine 连接（RunPhaseList）。
-         - 每 job = 行卡（job-row）：状态徽章（五态不动）+ job_id 截断 + 本地走秒 + meta 行。
-         - 非终态区置顶且自动展开（活细节）；终态窗口收拢为紧凑行卡；空态「（无任务）」。
+       本文件仅迭代「渲染层 + 样式 + 行内交互」，DLZ 语义 → ZCode 视觉映射：
+         - 垂直 spine 阶段带 = 组灯（stage-light）+ 阶段名 + 计数；终态带完成/失败摘要。
+         - 每 job = 行卡（job-row，原生 <details>）：默认收拢为一行（状态灯 + 主体 +
+           走秒/相对时间 + chevron），点击展开详情（任务/活动/进程心跳/用量/结果/时间）。
+         - 运行中行卡默认展开（活细节前置）；终态窗口默认只露最新 5 条，其余一键展开。
+         - 展开状态跨渲染保留（模块级集合）；走秒只跑非终态，终态停表，缺 finished_at
+           照实显示「—」不空走。job_id 点击复制完整值。
        原生 ES 模块零依赖；静态 HTML 不内置任何凭据。
        浏览器态（window.parent === window）：token 取自页面 URL query（read_token），
        /api/jobs 初载 + 纯 SSE /events 断线重连（CH2 原行为，present_files 挂载）。
@@ -20,7 +23,7 @@
        resources/read('dlz://board') 2s 轮询；底部数据源声明按实际通道诚实标注。 */
     :root {
       color-scheme: light dark;
-      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+      font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
       --dlz-text: var(--cb-color-text-primary, var(--color-text-primary, light-dark(#202123, #e8e9ec)));
       --dlz-text-2: var(--cb-color-text-secondary, var(--color-text-secondary, light-dark(#6b6b6b, #9a9ca5)));
       --dlz-text-3: var(--cb-color-text-tertiary, var(--color-text-tertiary, light-dark(#9a9ca5, #6f7280)));
@@ -30,77 +33,109 @@
       --dlz-border: var(--cb-color-border-default, var(--color-border-default, light-dark(#dedede, #33353d)));
       --dlz-blue-bg: var(--cb-color-accent-bg, light-dark(#e9f4ff, #16324a));
       --dlz-blue-fg: var(--cb-color-accent-fg, light-dark(#1264a3, #7cc0f5));
+      --dlz-green: light-dark(#167347, #6fd39c);
+      --dlz-red: light-dark(#a33030, #f19a9a);
+      --dlz-orange: light-dark(#b25e09, #e8b45a);
+      --dlz-purple: light-dark(#5a4a86, #b3a6dd);
+      --dlz-gray: light-dark(#9a9ca5, #6f7280);
     }
     :root[data-theme="light"] { color-scheme: light; }
     :root[data-theme="dark"] { color-scheme: dark; }
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 16px; color: var(--dlz-text); background: var(--dlz-bg); }
-    header.board-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-    .board-title h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
-    .board-sub { margin: 2px 0 0; font-size: 11px; color: var(--dlz-text-3); }
+    body { margin: 0; padding: 14px 16px 18px; color: var(--dlz-text); background: var(--dlz-bg); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    header.board-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .board-title h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .2px; }
+    .board-sub { margin: 1px 0 0; font-size: 11px; color: var(--dlz-text-3); }
     .badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; background: var(--dlz-blue-bg); color: var(--dlz-blue-fg); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
     .badge.queued { background: light-dark(#ececef, #2a2b31); color: light-dark(#5c5c66, #b9bac2); }
     .badge.running { background: var(--dlz-blue-bg); color: var(--dlz-blue-fg); }
     .badge.running::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: dlz-pulse 1.2s ease-in-out infinite; }
-    .badge.completed { background: light-dark(#e5f6ed, #14301f); color: light-dark(#167347, #6fd39c); }
-    .badge.failed { background: light-dark(#fce9e9, #3a1d1d); color: light-dark(#a33030, #f19a9a); }
-    .badge.cancelled { background: light-dark(#f2f0f7, #2a2540); color: light-dark(#5a4a86, #b3a6dd); }
-    .badge.recovery { background: light-dark(#fff3e0, #3a2a10); color: light-dark(#b25e09, #e8b45a); }
-    .badge.down { background: light-dark(#fce9e9, #3a1d1d); color: light-dark(#a33030, #f19a9a); }
+    .badge.completed { background: light-dark(#e5f6ed, #14301f); color: var(--dlz-green); }
+    .badge.failed { background: light-dark(#fce9e9, #3a1d1d); color: var(--dlz-red); }
+    .badge.cancelled { background: light-dark(#f2f0f7, #2a2540); color: var(--dlz-purple); }
+    .badge.recovery { background: light-dark(#fff3e0, #3a2a10); color: var(--dlz-orange); }
+    .badge.down { background: light-dark(#fce9e9, #3a1d1d); color: var(--dlz-red); }
     .badge.pending { background: light-dark(#ececef, #2a2b31); color: light-dark(#5c5c66, #b9bac2); }
     @keyframes dlz-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
-    @media (prefers-reduced-motion: reduce) {
-      .badge.running::before { animation: none; }
-      .stage[data-live="true"][data-stage="active"] .stage-light::after { animation: none; }
-    }
-    #notice { margin: 0 0 12px; padding: 8px 12px; border-radius: 9px; background: light-dark(#fff3e0, #3a2a10); color: light-dark(#b25e09, #e8b45a); font-size: 12px; }
+    #notice { margin: 0 0 10px; padding: 8px 12px; border-radius: 9px; background: light-dark(#fff3e0, #3a2a10); color: var(--dlz-orange); font-size: 12px; }
     #notice[hidden] { display: none; }
-    #truncation { margin: 0 0 12px; color: var(--dlz-text-2); font-size: 12px; }
+    #truncation { margin: 0 0 10px; color: var(--dlz-text-3); font-size: 11px; }
     #truncation[hidden] { display: none; }
     /* 底部数据源声明（禁区 setChannel 写入）：与实际通道一致，降级时如实标注。 */
-    #channel { margin: 12px 0 0; color: var(--dlz-text-2); font-size: 12px; }
+    #channel { margin: 12px 0 0; color: var(--dlz-text-3); font-size: 11px; }
 
     /* ---------- 垂直 spine 阶段带（ZCode RunPhaseList 语言：组灯 + 行卡） ---------- */
     .spine { display: flex; flex-direction: column; gap: 2px; }
-    .stage { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 10px; }
-    .stage-axis { position: relative; display: flex; justify-content: center; padding-top: 12px; }
+    .stage { display: grid; grid-template-columns: 18px minmax(0, 1fr); column-gap: 9px; }
+    /* 显式归位：spine 轴占左列并纵跨 head+body 两行；head/body 固定右列。
+       （ZC1 一轮事故：依赖自动归位时 body 掉进窄左列，行卡被挤成竖条。） */
+    .stage-axis { grid-row: 1 / span 2; position: relative; display: flex; justify-content: center; padding-top: 11px; }
+    .stage-head { grid-column: 2; display: flex; align-items: center; gap: 8px; padding: 8px 2px 5px; }
+    .stage-body { grid-column: 2; display: flex; flex-direction: column; gap: 3px; padding-bottom: 6px; }
     .stage-axis::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-50%); background: var(--dlz-border); }
-    .stage:first-child .stage-axis::before { top: 12px; }
-    .stage:last-child .stage-axis::before { bottom: auto; height: 22px; }
-    .stage-light { position: relative; z-index: 1; width: 11px; height: 11px; border-radius: 50%; background: var(--dlz-bg); border: 2px solid var(--dlz-border); }
-    .stage[data-live="true"][data-stage="queued"] .stage-light { border-color: light-dark(#9a9ca5, #6f7280); background: light-dark(#c8cad0, #4a4c55); }
+    .stage:first-child .stage-axis::before { top: 11px; }
+    .stage:last-child .stage-axis::before { bottom: auto; height: 20px; }
+    .stage-light { position: relative; z-index: 1; width: 10px; height: 10px; border-radius: 50%; background: var(--dlz-bg); border: 2px solid var(--dlz-border); }
+    .stage[data-live="true"][data-stage="queued"] .stage-light { border-color: var(--dlz-gray); background: light-dark(#c8cad0, #4a4c55); }
     .stage[data-live="true"][data-stage="active"] .stage-light { border-color: var(--dlz-blue-fg); background: var(--dlz-blue-fg); box-shadow: 0 0 0 4px var(--dlz-blue-bg); }
     .stage[data-live="true"][data-stage="active"] .stage-light::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 1px solid var(--dlz-blue-fg); animation: dlz-pulse 1.6s ease-in-out infinite; }
-    .stage-head { display: flex; align-items: center; gap: 8px; padding: 10px 0 6px; }
+    .stage[data-live="true"][data-stage="terminal"] .stage-light { border-color: var(--dlz-green); background: var(--dlz-green); }
     .stage-name { font-size: 12px; font-weight: 650; color: var(--dlz-text-2); }
-    .stage-count { font-size: 11px; color: var(--dlz-text-3); background: var(--dlz-bg-3); border-radius: 999px; padding: 1px 7px; }
-    .stage-body { display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
-    .stage-body.compact { gap: 4px; }
+    .stage-count { font-size: 11px; color: var(--dlz-text-3); background: var(--dlz-bg-3); border-radius: 999px; padding: 0 7px; }
+    .stage-sub { font-size: 11px; color: var(--dlz-text-3); }
+    .stage-sub .bad { color: var(--dlz-red); font-weight: 600; }
+    .stage-toggle { margin-left: auto; border: 0; background: transparent; color: var(--dlz-blue-fg); font: inherit; font-size: 11px; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+    .stage-toggle:hover { background: var(--dlz-blue-bg); }
+    .stage-toggle[hidden] { display: none; }
 
-    .empty { color: var(--dlz-text-3); font-size: 12px; padding: 4px 2px; }
-    /* 任务行卡（job = pill/行卡）：运行中高亮（灯亮语义），失败/恢复警示色但不用大字报。 */
-    .job-row { border: 1px solid var(--dlz-border); border-radius: 10px; padding: 9px 12px; background: var(--dlz-bg-2); }
-    .job-row.active-job { border-color: var(--dlz-blue-fg); background: var(--dlz-blue-bg); }
-    .job-row.alert { border-color: light-dark(#e0a35c, #6b4a1c); }
-    .row-head { display: flex; align-items: center; gap: 8px; }
-    .job-id { font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dlz-text-2); }
-    .row-head .job-id { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .row-elapsed { margin-left: auto; font-size: 11px; color: var(--dlz-text-2); white-space: nowrap; }
-    .row-elapsed b { font-weight: 600; }
-    .job-row.active-job .row-elapsed { color: var(--dlz-text); }
-    .job-meta { margin-top: 5px; font-size: 12px; color: var(--dlz-text); overflow-wrap: anywhere; }
-    .job-meta .dim { color: var(--dlz-text-3); }
-    .job-line { margin-top: 3px; font-size: 12px; color: var(--dlz-text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
-    .job-line b { color: var(--dlz-text); font-weight: 600; }
-    .job-row.compact { padding: 6px 10px; }
-    @media (max-width: 560px) { .row-head { flex-wrap: wrap; } .row-elapsed { margin-left: 0; } }
+    .empty { color: var(--dlz-text-3); font-size: 12px; padding: 3px 2px; margin: 0; }
+
+    /* ---------- 任务行卡（<details>：默认一行收拢，点击展开详情） ---------- */
+    .job-row { border: 1px solid transparent; border-radius: 8px; background: transparent; }
+    .job-row:hover { background: var(--dlz-bg-2); }
+    .job-row[open] { background: var(--dlz-bg-2); border-color: var(--dlz-border); }
+    .job-row.row-running { background: var(--dlz-blue-bg); }
+    .job-row.row-running:hover, .job-row.row-running[open] { border-color: var(--dlz-blue-fg); }
+    .row-summary { display: flex; align-items: center; gap: 8px; padding: 5px 8px; cursor: pointer; list-style: none; border-radius: 8px; }
+    .row-summary::-webkit-details-marker { display: none; }
+    .row-summary:focus-visible { outline: 2px solid var(--dlz-blue-fg); outline-offset: 1px; }
+    .dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--dlz-gray); }
+    .row-running .dot { background: var(--dlz-blue-fg); animation: dlz-pulse 1.2s ease-in-out infinite; }
+    .row-completed .dot { background: var(--dlz-green); }
+    .row-failed .dot { background: var(--dlz-red); }
+    .row-cancelled .dot { background: var(--dlz-purple); }
+    .row-recovery .dot { background: var(--dlz-orange); }
+    .row-title { font-size: 12px; font-weight: 600; color: var(--dlz-text); white-space: nowrap; }
+    .row-title .dim { font-weight: 400; color: var(--dlz-text-2); }
+    .row-title .bad { color: var(--dlz-red); }
+    .row-brief { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--dlz-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row-elapsed { flex: 0 0 auto; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dlz-text-2); white-space: nowrap; }
+    .row-running .row-elapsed { color: var(--dlz-blue-fg); font-weight: 600; }
+    .chev { flex: 0 0 auto; font-size: 10px; color: var(--dlz-text-3); transition: transform .15s ease; }
+    .job-row[open] .chev { transform: rotate(90deg); }
+    .row-detail { padding: 2px 10px 8px 24px; display: flex; flex-direction: column; gap: 2px; }
+    .row-detail .line { font-size: 12px; color: var(--dlz-text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+    .row-detail .line b { color: var(--dlz-text-3); font-weight: 500; margin-right: 4px; }
+    .row-detail .mono { font-size: 11px; }
+    .copy-id { cursor: copy; color: var(--dlz-blue-fg); }
+    .copy-id:hover { text-decoration: underline; }
+    @media (prefers-reduced-motion: reduce) {
+      .badge.running::before, .row-running .dot { animation: none; }
+      .stage[data-live="true"][data-stage="active"] .stage-light::after { animation: none; }
+      .chev { transition: none; }
+    }
+    @media (max-width: 560px) {
+      .row-brief { display: none; }
+      .stage-sub { display: none; }
+    }
   </style>
 </head>
 <body>
   <header class="board-header">
     <div class="board-title">
       <h1>DLZ看板</h1>
-      <p class="board-sub">ZCode 风格 · 阶段带 / 任务行卡</p>
+      <p class="board-sub">点击行卡展开详情 · 终态默认收拢</p>
     </div>
     <span id="connection" class="badge pending">初始化…</span>
   </header>
@@ -119,16 +154,28 @@
     </section>
     <section class="stage" id="stage-terminal" data-stage="terminal" data-live="false">
       <div class="stage-axis"><span class="stage-light" aria-hidden="true"></span></div>
-      <div class="stage-head"><span class="stage-name">终态</span><span class="stage-count" id="count-terminal">0</span></div>
-      <div class="stage-body compact" id="column-terminal"></div>
+      <div class="stage-head">
+        <span class="stage-name">终态</span><span class="stage-count" id="count-terminal">0</span>
+        <span class="stage-sub" id="terminal-sub"></span>
+        <button type="button" class="stage-toggle" id="terminal-toggle" hidden></button>
+      </div>
+      <div class="stage-body" id="column-terminal"></div>
     </section>
   </main>
   <p id="channel">数据源：—</p>
   <script type="module">
     "use strict";
     const TERMINAL_STATUSES = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
-    const BADGE_CLASSES = { QUEUED: "queued", RUNNING: "running", COMPLETED: "completed", FAILED: "failed", CANCELLED: "cancelled", RECOVERY_REQUIRED: "recovery" };
     const COLUMN_STATUSES = { queued: ["QUEUED"], active: ["RUNNING", "RECOVERY_REQUIRED"], terminal: ["COMPLETED", "FAILED", "CANCELLED"] };
+    // 状态人性化标签 + 行卡修饰类（原始 status 值保留在 title 与详情行，诚实不丢信息）。
+    const STATUS_META = {
+      QUEUED: { label: "排队", cls: "queued" },
+      RUNNING: { label: "运行中", cls: "running" },
+      COMPLETED: { label: "完成", cls: "completed" },
+      FAILED: { label: "失败", cls: "failed" },
+      CANCELLED: { label: "已取消", cls: "cancelled" },
+      RECOVERY_REQUIRED: { label: "需恢复", cls: "recovery" },
+    };
     const ELAPSED_TICK_MS = 1000;
     const RECONNECT_DELAY_MS = 3000;
     // CH3 widget 双通道：SSE 启动期超时（onerror 静默不触发时的确定性兜底）与资源轮询间隔。
@@ -136,12 +183,15 @@
     const POLL_INTERVAL_MS = 2000;
     const SIZE_DEBOUNCE_MS = 150; // size-changed 去抖（与 UX1 同族）
     const BOARD_RESOURCE_URI = "dlz://board"; // 资源轮询兜底通道（蓝图 §12.2）
+    const TERMINAL_VISIBLE_LIMIT = 5; // 终态窗口默认只露最新条数，其余「展开其余 N 条」
 
     const connection = document.getElementById("connection");
     const notice = document.getElementById("notice");
     const truncation = document.getElementById("truncation");
     const channel = document.getElementById("channel");
     const boardRoot = document.getElementById("board_root");
+    const terminalSub = document.getElementById("terminal-sub");
+    const terminalToggle = document.getElementById("terminal-toggle");
     const columnBodies = new Map();
     for (const key of ["queued", "active", "terminal"]) {
       columnBodies.set(key, document.getElementById(`column-${key}`));
@@ -154,6 +204,10 @@
       stageCounts.set(key, document.getElementById(`count-${key}`));
     }
     const jobs = new Map(); // job_id -> 最近快照（SSE diff 合并 / 资源轮询全量替换）
+    // 行内交互状态（跨渲染保留）：用户展开/收拢偏好 + 终态窗口全量开关。
+    const expandedJobs = new Set();
+    const collapsedJobs = new Set();
+    let terminalShowAll = false;
     let source = null;
     let elapsedTimer = null;
     let reconnectTimer = null;
@@ -199,12 +253,36 @@
       if (minutes > 0) return `${minutes}m ${seconds}s`;
       return `${seconds}s`;
     }
-    // 走秒（与 UX1 同族）：started_at ?? created_at 起步，终态 finished_at 停表；本地每秒重算。
+    // 人性化相对时间（title 保留完整 ISO 戳，精度可查）。
+    function relativeText(ms) {
+      const delta = Date.now() - ms;
+      if (delta < 0) return stamp(ms).slice(5, 16).replace("T", " ");
+      const seconds = Math.floor(delta / 1000);
+      if (seconds < 10) return "刚刚";
+      if (seconds < 60) return `${seconds} 秒前`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes} 分钟前`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours} 小时前`;
+      const days = Math.floor(hours / 24);
+      if (days < 7) return `${days} 天前`;
+      return stamp(ms).slice(0, 10);
+    }
+    // 走秒（与 UX1 同族）：started_at ?? created_at 起步，终态 finished_at 停表；
+    // 终态缺 finished_at 返回 null（照实显示「—」，不让死任务空走到 181h）。
     function elapsedText(task) {
       const start = toMillis(task.started_at) ?? toMillis(task.created_at);
-      if (start === null) return "—";
-      const end = toMillis(task.finished_at) ?? Date.now();
-      return duration(end - start);
+      if (start === null) return null;
+      const finished = toMillis(task.finished_at);
+      if (finished !== null) return duration(finished - start);
+      if (TERMINAL_STATUSES.has(task.status)) return null;
+      return duration(Date.now() - start);
+    }
+    function elapsedLabel(task) {
+      const text = elapsedText(task);
+      if (task.status === "QUEUED") return `排队 ${text ?? "—"}`;
+      if (TERMINAL_STATUSES.has(task.status)) return `用时 ${text ?? "—"}`;
+      return `已运行 ${text ?? "—"}`;
     }
     function activityText(task) {
       const activity = task.activity !== null && typeof task.activity === "object" && !Array.isArray(task.activity) ? task.activity : null;
@@ -256,57 +334,151 @@
       }
       return "active"; // 未知状态不虚报终态：暂归执行中列并保留原状态徽章
     }
-    // 任务行卡（job = pill/行卡）：非终态显活细节（meta/活动/进程/用量），终态收拢为紧凑行卡。
-    function createJobRow(task, compact) {
-      const row = document.createElement("article");
-      const status = typeof task.status === "string" && task.status.length > 0 ? task.status : "UNKNOWN";
-      const badgeClass = BADGE_CLASSES[status] ?? "";
-      row.className = compact ? "job-row compact" : "job-row";
-      if (badgeClass === "running") row.className += " active-job";
-      if (badgeClass === "failed" || badgeClass === "recovery") row.className += " alert";
-      row.dataset.jobId = task.job_id;
-      const head = document.createElement("header");
-      head.className = "row-head";
-      const badge = document.createElement("span");
-      badge.className = `badge ${badgeClass}`.trim();
-      badge.textContent = status;
-      const id = document.createElement("span");
-      id.className = "job-id";
-      id.textContent = shortId(task.job_id);
-      const elapsed = document.createElement("div");
-      elapsed.className = "row-elapsed job-line";
-      const elapsedLabel = document.createElement("b");
-      elapsedLabel.textContent = "已运行 ";
-      elapsed.append(elapsedLabel, document.createTextNode(elapsedText(task)));
-      head.append(badge, id, elapsed);
-      row.append(head);
-      if (compact) return row; // 终态窗口：紧凑行卡（徽章 + job_id + 已运行）
-      const meta = document.createElement("div");
-      meta.className = "job-meta";
-      const agent = document.createElement("span");
-      agent.textContent = typeof task.agent === "string" && task.agent.length > 0 ? task.agent : "—";
-      const dim = document.createElement("span");
-      dim.className = "dim";
-      dim.textContent = " · ";
-      const project = document.createElement("span");
-      project.textContent = typeof task.project === "string" && task.project.length > 0 ? task.project : "—";
-      meta.append(agent, dim, project);
-      const activity = document.createElement("div");
-      activity.className = "job-line";
-      const activityLabel = document.createElement("b");
-      activityLabel.textContent = "活动 ";
-      activity.append(activityLabel, document.createTextNode(activityText(task)));
-      const proc = document.createElement("div");
-      proc.className = "job-line";
-      const procLabel = document.createElement("b");
-      procLabel.textContent = "进程/心跳 ";
-      proc.append(procLabel, document.createTextNode(processText(task)));
-      const usage = document.createElement("div");
-      usage.className = "job-line";
-      usage.textContent = usageSummary(task.usage);
-      row.append(meta, activity, proc, usage);
-      return row;
+    function brief(text, limit = 60) {
+      if (typeof text !== "string" || text.length === 0) return "";
+      return text.length > limit ? `${text.slice(0, limit)}…` : text;
     }
+
+    // ---------- 行卡构建（ZCode 简洁交互：默认一行，点击展开） ----------
+    function makeLine(label, text, mono = false) {
+      const line = document.createElement("div");
+      line.className = "line";
+      const b = document.createElement("b");
+      b.textContent = label;
+      line.append(b);
+      const span = document.createElement("span");
+      if (mono) span.className = "mono";
+      span.textContent = text;
+      line.append(span);
+      return line;
+    }
+    function makeTimeLine(task) {
+      const line = document.createElement("div");
+      line.className = "line";
+      const b = document.createElement("b");
+      b.textContent = "时间";
+      line.append(b);
+      const fields = [["创建", task.created_at], ["开始", task.started_at], ["结束", task.finished_at]];
+      const parts = [];
+      for (const [label, value] of fields) {
+        const ms = toMillis(value);
+        if (ms === null) continue;
+        const span = document.createElement("span");
+        span.textContent = `${label} ${relativeText(ms)}`;
+        span.title = `${label} ${stamp(ms)}`;
+        parts.push(span);
+      }
+      if (parts.length === 0) {
+        const dash = document.createElement("span");
+        dash.textContent = "—";
+        line.append(dash);
+        return line;
+      }
+      for (let index = 0; index < parts.length; index += 1) {
+        if (index > 0) line.append(document.createTextNode(" · "));
+        line.append(parts[index]);
+      }
+      return line;
+    }
+    // 任务行卡（job = <details> 行卡）：摘要行 = 状态灯 + 主体 + 走秒/相对时间 + chevron；
+    // 详情体按阶段给活信息（执行中：活动/进程心跳/用量；终态：结果/时间/用量）。
+    function createJobRow(task, stage) {
+      const status = typeof task.status === "string" && task.status.length > 0 ? task.status : "UNKNOWN";
+      const meta = STATUS_META[status] ?? { label: status, cls: "" };
+      const isTerminal = TERMINAL_STATUSES.has(status);
+      const details = document.createElement("details");
+      details.className = meta.cls ? `job-row row-${meta.cls}` : "job-row";
+      details.dataset.jobId = task.job_id;
+      // 默认展开策略：执行中（active）行卡展开活细节，其余收拢；用户偏好优先。
+      details.open = expandedJobs.has(task.job_id) || (stage === "active" && !collapsedJobs.has(task.job_id));
+      details.ontoggle = () => {
+        if (details.open) { expandedJobs.add(task.job_id); collapsedJobs.delete(task.job_id); }
+        else { expandedJobs.delete(task.job_id); collapsedJobs.add(task.job_id); }
+      };
+
+      const summary = document.createElement("summary");
+      summary.className = "row-summary";
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.title = status;
+      const title = document.createElement("span");
+      title.className = "row-title";
+      if (stage === "terminal") {
+        const label = document.createElement("span");
+        label.textContent = meta.label;
+        if (meta.cls === "failed" || meta.cls === "recovery") label.className = "bad";
+        const idSpan = document.createElement("span");
+        idSpan.className = "dim mono";
+        idSpan.textContent = ` ${shortId(task.job_id)}`;
+        title.append(label, idSpan);
+      } else {
+        const agent = document.createElement("span");
+        agent.textContent = typeof task.agent === "string" && task.agent.length > 0 ? task.agent : "—";
+        const dim = document.createElement("span");
+        dim.className = "dim";
+        dim.textContent = ` · ${typeof task.project === "string" && task.project.length > 0 ? task.project : "—"}`;
+        title.append(agent, dim);
+      }
+      const briefSpan = document.createElement("span");
+      briefSpan.className = "row-brief";
+      briefSpan.textContent = brief(task.task) || activityText(task);
+      const finishedMs = toMillis(task.finished_at);
+      const elapsed = document.createElement("span");
+      elapsed.className = "row-elapsed";
+      if (isTerminal && finishedMs !== null) {
+        elapsed.textContent = relativeText(finishedMs);
+        elapsed.title = `结束 ${stamp(finishedMs)} · ${elapsedLabel(task)}`;
+      } else {
+        elapsed.textContent = elapsedLabel(task);
+      }
+      const chev = document.createElement("span");
+      chev.className = "chev";
+      chev.textContent = "▸";
+      summary.append(dot, title, briefSpan, elapsed, chev);
+      details.append(summary);
+
+      const body = document.createElement("div");
+      body.className = "row-detail";
+      body.append(makeLine("状态", `${meta.label}（${status}）`));
+      if (typeof task.task === "string" && task.task.length > 0) body.append(makeLine("任务", task.task));
+      const idLine = document.createElement("div");
+      idLine.className = "line";
+      const idLabel = document.createElement("b");
+      idLabel.textContent = "job_id";
+      const idValue = document.createElement("span");
+      idValue.className = "mono copy-id";
+      idValue.textContent = task.job_id;
+      idValue.title = "点击复制完整 job_id";
+      idValue.onclick = (event) => {
+        event.stopPropagation();
+        try {
+          if (typeof navigator !== "undefined" && navigator.clipboard) {
+            void navigator.clipboard.writeText(task.job_id);
+            idValue.textContent = "已复制 ✓";
+            setTimeout(() => { idValue.textContent = task.job_id; }, 1200);
+          }
+        } catch { /* 剪贴板不可用时静默，行内已展示完整值 */ }
+      };
+      idLine.append(idLabel, idValue);
+      body.append(idLine);
+      if (!isTerminal) {
+        body.append(makeLine("活动", activityText(task)));
+        body.append(makeLine("进程/心跳", processText(task)));
+        body.append(makeLine("时长", elapsedLabel(task), true));
+      } else {
+        if (typeof task.final_text === "string" && task.final_text.length > 0) body.append(makeLine("结果", brief(task.final_text, 200)));
+        if (task.error !== null && task.error !== undefined) {
+          const errorText = typeof task.error === "string" ? task.error : JSON.stringify(task.error);
+          body.append(makeLine("错误", brief(errorText, 200)));
+        }
+        body.append(makeLine("时长", elapsedLabel(task), true));
+      }
+      body.append(makeLine("用量", usageSummary(task.usage).replace(/^用量：/, "")));
+      body.append(makeTimeLine(task));
+      details.append(body);
+      return details;
+    }
+
     function render() {
       const buckets = new Map([["queued", []], ["active", []], ["terminal", []]]);
       for (const task of jobs.values()) buckets.get(columnOf(task.status)).push(task);
@@ -321,13 +493,30 @@
           empty.className = "empty";
           empty.textContent = "（无任务）";
           body.replaceChildren(empty);
-          continue;
+        } else if (key === "terminal") {
+          // 终态带摘要（完成/失败分布，失败红字钉住）+ 收拢开关（开关留头部，行区只放行卡）。
+          const failed = list.filter((task) => task.status === "FAILED").length;
+          const done = list.filter((task) => task.status === "COMPLETED").length;
+          terminalSub.replaceChildren();
+          terminalSub.append(document.createTextNode(`完成 ${done}`));
+          if (failed > 0) {
+            const bad = document.createElement("span");
+            bad.className = "bad";
+            bad.textContent = ` · 失败 ${failed}`;
+            terminalSub.append(bad);
+          }
+          const visible = terminalShowAll ? list : list.slice(0, TERMINAL_VISIBLE_LIMIT);
+          terminalToggle.hidden = list.length <= TERMINAL_VISIBLE_LIMIT;
+          terminalToggle.textContent = terminalShowAll ? "收拢" : `展开其余 ${list.length - TERMINAL_VISIBLE_LIMIT} 条`;
+          body.replaceChildren(...visible.map((task) => createJobRow(task, key)));
+        } else {
+          body.replaceChildren(...list.map((task) => createJobRow(task, key)));
         }
-        body.replaceChildren(...list.map((task) => createJobRow(task, key === "terminal")));
       }
       truncation.hidden = false;
       truncation.textContent = `当前 ${jobs.size} 张卡`;
     }
+    terminalToggle.onclick = () => { terminalShowAll = !terminalShowAll; render(); };
     function renderTruncation(board) {
       if (board?.truncated !== true) { truncation.hidden = true; return; }
       truncation.hidden = false;
@@ -341,11 +530,13 @@
         if (job !== null && typeof job === "object" && typeof job.job_id === "string") jobs.set(job.job_id, job);
       }
     }
+    // 走秒只跑非终态行卡（终态已停表静态展示）；行卡每秒原位更新，不触发整树重渲。
     function elapsedTick() {
       for (const card of document.querySelectorAll(".job-row")) {
         const task = jobs.get(card.dataset.jobId);
-        const line = card.querySelector(".job-line b");
-        if (task && line) line.nextSibling.textContent = elapsedText(task);
+        if (!task || TERMINAL_STATUSES.has(task.status)) continue;
+        const span = card.querySelector(".row-elapsed");
+        if (span) span.textContent = elapsedLabel(task);
       }
     }
     elapsedTick.dlzTimerKind = "elapsed"; // 计时器分类标记（数据轮询与走秒分流）

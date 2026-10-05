@@ -7,7 +7,7 @@
 
 - **bug**：CH1/CH3 把 SDK 库方法名 `app.readServerResource` 当线协议方法名发 → WB 宿主报 `Method not found` → 单任务卡一直走 tools/call 降级（会话 Always allow 所以无弹窗，A10 的「无弹窗」是降级路径的假象）；看板 widget 轮询彻底失败。
 - **修复**：`send('resources/read', { uri })`（params 标准 MCP 形状，响应 `{contents:[{text}]}`——解析层早已按此实现，零改动）。改动：`src/task-card.html`（2 处调用+注释）、`src/board.html`（1 处调用+注释）、`test/task-card.test.js`（断言+注释）。证据：`@modelcontextprotocol/ext-apps@2.0.3` app-bridge.js 源码（`resources/read` handler + 原样转发 MCP 服务器）+ WB 官方文档「readServerResource(params) → JSON-RPC method `resources/read`」。
-- **另一现象**：截图标题「大力子看板」= 宿主按对话缓存 ui:// 资源（昨晚旧对话），**新对话调 render_board 即新内容**，非 bug。
+- **另一现象**：截图标题「大力子看板」（"大力子"系"大狸子"历史误写，保留当时现象原样）= 宿主按对话缓存 ui:// 资源（昨晚旧对话），**新对话调 render_board 即新内容**，非 bug。
 - **验收窗口遗留**：ZCode UI 诉求——`WorkflowTimeline`/`WorkflowRunPhaseList` 视觉语言（调研 §4.1：水平时间线 phase 站/pill 折叠、垂直 spine 组灯、运行中展开、roster 钉住 failed/asking）。
 
 ## 2. 相位划分

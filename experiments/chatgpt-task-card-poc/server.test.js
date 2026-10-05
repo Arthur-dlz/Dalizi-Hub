@@ -73,7 +73,7 @@ test('Streamable HTTP exposes UI link, resource, and all three tools', async t =
   assert.deepEqual(resource.contents[0]._meta.ui.csp, { connectDomains: [], resourceDomains: [] });
   assert.match(resource.contents[0].text, /ui\/initialize/);
   assert.match(resource.contents[0].text, /name: 'get_task'/);
-  assert.match(resource.contents[0].text, /大力子任务卡/);
+  assert.match(resource.contents[0].text, /大狸子任务卡/);
 
   for (const name of ['render_task_card', 'get_task']) {
     const result = await rpc('tools/call', { name, arguments: { job_id: DEMO_JOB_ID } });
@@ -104,7 +104,7 @@ test('UI is self-contained and uses Chinese key copy', async () => {
   for (const field of ['agent', 'project', 'status', 'elapsed', 'current_activity', 'last_observed_at', 'result_summary']) {
     assert.match(html, new RegExp(`id="${field}"`));
   }
-  for (const text of ['大力子任务卡', '执行 Agent', '项目', '已运行', '当前活动', '模型 / 思考强度', '最后更新', '刷新', '自动刷新（3秒）', '任务执行中，状态将自动刷新。', '任务已结束，自动刷新已停止。']) {
+  for (const text of ['大狸子任务卡', '执行 Agent', '项目', '已运行', '当前活动', '模型 / 思考强度', '最后更新', '刷新', '自动刷新（3秒）', '任务执行中，状态将自动刷新。', '任务已结束，自动刷新已停止。']) {
     assert.ok(html.includes(text), `missing Chinese copy: ${text}`);
   }
   assert.doesNotMatch(html, /<script[^>]+src=|<link[^>]+href=|<img[^>]+src=/i);
