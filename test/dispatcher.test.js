@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { Dispatcher, isOwnerHeartbeatStale } from "../src/dispatcher.js";
+import { Dispatcher, isOwnerHeartbeatStale, BOARD_TERMINAL_WINDOW, BOARD_MAX_BYTES } from "../src/dispatcher.js";
 import { JobStore } from "../src/job-store.js";
 import { IdempotencyIndex } from "../src/idempotency-index.js";
 import { InstanceLock } from "../src/instance-lock.js";
@@ -555,4 +555,127 @@ test("T6: malformed emits and apply failures are counted aside and never change 
   } finally {
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
+});
+
+// ---------- P5：dispatcher.listBoard 只读投影（蓝图 §12.2 / IMPLEMENTATION §9.1） ----------
+
+// store 探针：只提供 listBoard 需要的两个只读 list；其余方法一旦被调用即记名并抛错，
+// 以此断言 listBoard 零写、零单点读。
+function createStoreProbe({ all = [], nonTerminal = [] } = {}) {
+  const writes = [];
+  return {
+    writes,
+    async listAll() { return all; },
+    async listNonTerminal() { return nonTerminal; },
+    async get(jobId) { writes.push(["get", jobId]); throw new Error("listBoard must not read a single job"); },
+    async create(job) { writes.push(["create", job.job_id]); throw new Error("listBoard must not create"); },
+    async update(jobId) { writes.push(["update", jobId]); throw new Error("listBoard must not update"); },
+    async apply(jobId) { writes.push(["apply", jobId]); throw new Error("listBoard must not apply"); },
+  };
+}
+
+function makeReadOnlyDispatcher(store) {
+  return new Dispatcher({
+    registry: { resolve() { throw new Error("listBoard must not resolve projects"); } },
+    allowedModels: new Set(["custom-local:step-5-preview"]),
+    store,
+    runner: { async run() { throw new Error("listBoard must not run"); } },
+  });
+}
+
+function boardRecord({ job_id, status, updated_at, finished_at = null, final_text = null }) {
+  return {
+    schema_version: 2,
+    revision: 1,
+    job_id,
+    status,
+    agent: "workbuddy",
+    project: "canary-project",
+    created_at: "2026-10-04T00:00:00.000Z",
+    updated_at,
+    finished_at,
+    final_text,
+    usage: null,
+    execution_state: status === "QUEUED" ? "idle" : "stopped",
+    liveness: { owner_heartbeat_at: null, process_checked_at: null, process_state: null, last_event_at: null, last_output_at: null },
+  };
+}
+
+test("P5: dispatcher.listBoard is a read-only projection with the {jobs, truncated, total} contract", async () => {
+  const records = [
+    boardRecord({ job_id: "queued-a", status: "QUEUED", updated_at: "2026-10-04T08:00:00.000Z" }),
+    boardRecord({ job_id: "queued-b", status: "QUEUED", updated_at: "2026-10-04T09:00:00.000Z" }),
+    boardRecord({ job_id: "running-c", status: "RUNNING", updated_at: "2026-10-04T10:00:00.000Z" }),
+    boardRecord({ job_id: "done-y", status: "COMPLETED", updated_at: "2026-10-04T11:00:00.000Z", finished_at: "2026-10-04T11:00:00.000Z" }),
+    boardRecord({ job_id: "done-x", status: "FAILED", updated_at: "2026-10-04T12:00:00.000Z", finished_at: "2026-10-04T12:00:00.000Z" }),
+  ];
+  const store = createStoreProbe({ all: records, nonTerminal: records.slice(0, 3) });
+  const dispatcher = makeReadOnlyDispatcher(store);
+
+  const board = await dispatcher.listBoard();
+
+  // 契约：非终态在前（updated_at 降序），终态按 finished_at 降序；不写 store、不单点读。
+  assert.deepEqual(board.jobs.map((job) => job.job_id), ["running-c", "queued-b", "queued-a", "done-x", "done-y"]);
+  assert.equal(board.truncated, false);
+  assert.equal(board.total, 5);
+  assert.equal(store.writes.length, 0, "listBoard must not write or read individual jobs through the store");
+  for (const job of board.jobs) {
+    assert.equal(typeof job.job_id, "string");
+    assert.equal(typeof job.status, "string");
+    assert.equal(typeof job.revision, "number");
+    assert.equal(job.schema_version, 2);
+  }
+});
+
+test("P5: listBoard bounds the terminal window to the newest 50 and flags truncation", async () => {
+  const nonTerminal = [
+    boardRecord({ job_id: "queued-a", status: "QUEUED", updated_at: "2026-10-04T08:00:00.000Z" }),
+    boardRecord({ job_id: "running-c", status: "RUNNING", updated_at: "2026-10-04T10:00:00.000Z" }),
+  ];
+  const terminal = Array.from({ length: 60 }, (_, index) => boardRecord({
+    job_id: `done-${String(index).padStart(2, "0")}`,
+    status: "COMPLETED",
+    updated_at: `2026-10-04T10:${String(index).padStart(2, "0")}:00.000Z`,
+    finished_at: `2026-10-04T10:${String(index).padStart(2, "0")}:00.000Z`,
+  }));
+  const store = createStoreProbe({ all: [...terminal, ...nonTerminal], nonTerminal });
+  const dispatcher = makeReadOnlyDispatcher(store);
+
+  const board = await dispatcher.listBoard();
+
+  assert.equal(BOARD_TERMINAL_WINDOW, 50);
+  assert.equal(board.total, 62); // total 是未截断全量条数，不是显示条数
+  assert.equal(board.truncated, true);
+  assert.equal(board.jobs.length, nonTerminal.length + BOARD_TERMINAL_WINDOW);
+  // 非终态在前；终态窗口取 finished_at 最近的 50 条（done-59 最新，done-10 是窗口边缘）。
+  assert.deepEqual(board.jobs.slice(0, 2).map((job) => job.job_id), ["running-c", "queued-a"]);
+  assert.equal(board.jobs[2].job_id, "done-59");
+  assert.equal(board.jobs[board.jobs.length - 1].job_id, "done-10");
+  assert.equal(store.writes.length, 0);
+});
+
+test("P5: listBoard trims the payload to the 1 MiB byte budget while keeping the total", async () => {
+  const bigText = "x".repeat(700 * 1024);
+  const twoBig = [
+    boardRecord({ job_id: "big-a", status: "QUEUED", updated_at: "2026-10-04T08:00:00.000Z", final_text: bigText }),
+    boardRecord({ job_id: "big-b", status: "COMPLETED", updated_at: "2026-10-04T09:00:00.000Z", finished_at: "2026-10-04T09:00:00.000Z", final_text: bigText }),
+  ];
+  const store = createStoreProbe({ all: twoBig, nonTerminal: twoBig.slice(0, 1) });
+  const board = await makeReadOnlyDispatcher(store).listBoard();
+  assert.equal(BOARD_MAX_BYTES, 1024 * 1024);
+  assert.equal(board.total, 2);
+  assert.equal(board.truncated, true);
+  assert.equal(board.jobs.length, 1); // 同序从头保留，超限从尾部截断
+  assert.equal(board.jobs[0].job_id, "big-a");
+  assert.ok(Buffer.byteLength(JSON.stringify(board), "utf8") <= BOARD_MAX_BYTES);
+
+  // 单条即超限：jobs 为空但 total 与截断标记保留（不静默丢弃信号）。
+  const hugeText = "y".repeat(2 * 1024 * 1024);
+  const oneHuge = [boardRecord({ job_id: "huge", status: "QUEUED", updated_at: "2026-10-04T08:00:00.000Z", final_text: hugeText })];
+  const hugeStore = createStoreProbe({ all: oneHuge, nonTerminal: oneHuge });
+  const hugeBoard = await makeReadOnlyDispatcher(hugeStore).listBoard();
+  assert.equal(hugeBoard.total, 1);
+  assert.equal(hugeBoard.truncated, true);
+  assert.deepEqual(hugeBoard.jobs, []);
+  assert.equal(hugeStore.writes.length, 0);
 });

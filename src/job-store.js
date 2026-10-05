@@ -279,6 +279,11 @@ export class JobStore {
 
   // 全量扫描（含终态）：幂等索引对账重建的记录来源（蓝图 §4 v1.2 恒对账）。
   // 忽略 .tmp 残尾与非 job 文件名；损坏快照显式报错，绝不静默跳过（跳过会向恢复扫描隐瞒非终态占用）。
+  // P5 OPS3 修复（2026-10-04 live）：JOB_FILE_PATTERN 宽松（字母数字下划线连字符），
+  // 同目录的 project-registry.json / workspace-roots.json 等运营文件会过筛，
+  // 经 normalizeRead v1 兼容补齐后被误当无终态 job 记录（看板头部残缺项、恢复扫描脏数据）。
+  // 权威判据 = 记录内容自带 job_id；无 job_id 的合法 JSON 属非 job 运营文件，跳过（非"损坏快照"，
+  // 无非终态占用可言，不违反上方"绝不静默跳过坏快照"原则）。
   async listAll() {
     let names;
     try {
@@ -294,6 +299,7 @@ export class JobStore {
       if (!JOB_FILE_PATTERN.test(jobId)) continue;
       const parsed = await this.#readSnapshotFile(jobPath(this.directory, jobId), jobId);
       if (parsed === null) continue; // 扫描瞬间被消费/改名
+      if (typeof parsed.job_id !== "string" || parsed.job_id.length === 0) continue; // 非 job 运营文件（如 registry/roots）
       records.push(parsed);
     }
     records.sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")));

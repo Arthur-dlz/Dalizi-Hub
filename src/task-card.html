@@ -5,48 +5,103 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>大力子任务卡</title>
   <style>
-    :root { color-scheme: light dark; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    /* 看板风状态卡（P5 UX1）：走秒解耦 + 阶段条 + 徽章体系 + 宿主主题 + 防截断。
+       主题消费链（宿主 --cb-* 优先，回退既有变量，再回退硬编码）：
+       var(--cb-*, var(--color-*, 常量))。JS 层收到 host-context-changed 后
+       以 dataset.theme 锁定；首帧 hostContext 可能为空对象（已知行为），
+       未锁定时由 color-scheme: light dark 兜底。 */
+    :root {
+      color-scheme: light dark;
+      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+      --dlz-text: var(--cb-color-text-primary, var(--color-text-primary, #202123));
+      --dlz-text-2: var(--cb-color-text-secondary, var(--color-text-secondary, #6b6b6b));
+      --dlz-bg: var(--cb-color-background-primary, var(--color-background-primary, #fff));
+      --dlz-bg-2: var(--cb-color-background-secondary, var(--color-background-secondary, #fff));
+      --dlz-bg-3: var(--cb-color-background-tertiary, var(--color-background-tertiary, #f5f5f5));
+      --dlz-border: var(--cb-color-border-default, var(--color-border-default, #dedede));
+      --dlz-blue-bg: var(--cb-color-accent-bg, #e9f4ff);
+      --dlz-blue-fg: var(--cb-color-accent-fg, #1264a3);
+    }
+    :root[data-theme="light"] { color-scheme: light; }
+    :root[data-theme="dark"] { color-scheme: dark; }
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 8px; color: var(--color-text-primary, #202123); background: var(--color-background-primary, #fff); }
-    .card { max-width: 560px; border: 1px solid var(--color-border-default, #dedede); border-radius: 14px; padding: 18px; background: var(--color-background-secondary, #fff); }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    body { margin: 0; padding: 8px; color: var(--dlz-text); background: var(--dlz-bg); }
+    .card { max-width: 640px; border: 1px solid var(--dlz-border); border-radius: 14px; padding: 16px 18px; background: var(--dlz-bg-2); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     h1 { margin: 0; font-size: 16px; font-weight: 650; }
-    h2 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--color-text-secondary, #6b6b6b); }
-    .badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; background: #e9f4ff; color: #1264a3; }
+    h2 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--dlz-text-2); }
+    .badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; background: var(--dlz-blue-bg); color: var(--dlz-blue-fg); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .badge.queued { background: #ececef; color: #5c5c66; }
+    .badge.running { background: var(--dlz-blue-bg); color: var(--dlz-blue-fg); }
+    .badge.running::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: dlz-pulse 1.2s ease-in-out infinite; }
     .badge.completed { background: #e5f6ed; color: #167347; }
     .badge.failed { background: #fce9e9; color: #a33030; }
     .badge.cancelled { background: #f2f0f7; color: #5a4a86; }
     .badge.recovery { background: #fff3e0; color: #b25e09; border: 1px solid #e8b45a; }
-    dl { display: grid; grid-template-columns: 132px 1fr; gap: 7px 12px; margin: 0 0 16px; }
-    dt { color: var(--color-text-secondary, #6b6b6b); }
-    dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-    .result { margin: 0 0 15px; padding: 11px 12px; border-radius: 9px; background: var(--color-background-tertiary, #f5f5f5); }
+    @keyframes dlz-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+    @media (prefers-reduced-motion: reduce) { .badge.running::before, .phase-bar.running .phase-dot { animation: none; } }
+    /* 状态阶段条：三态映射（QUEUED→排队 / RUNNING→执行 / 终态 / RECOVERY_REQUIRED 警示）。
+       只映射真实 status，不虚报百分比（诚实展示原则）。 */
+    .phase-bar { display: flex; gap: 6px; margin: 0 0 14px; }
+    .phase-seg { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dlz-text-2); padding: 6px 8px; border-radius: 8px; background: var(--dlz-bg-3); border: 1px solid transparent; }
+    .phase-dot { width: 8px; height: 8px; border-radius: 50%; background: #b9bdc4; flex: none; }
+    .phase-bar.queued .phase-seg:nth-child(1),
+    .phase-bar.running .phase-seg:nth-child(2),
+    .phase-bar.terminal .phase-seg:nth-child(3) { border-color: var(--dlz-border); background: var(--dlz-bg-2); color: var(--dlz-text); font-weight: 650; }
+    .phase-bar.queued .phase-seg:nth-child(1) .phase-dot { background: #8a8f98; }
+    .phase-bar.running .phase-seg:nth-child(2) .phase-dot { background: var(--dlz-blue-fg); animation: dlz-pulse 1.2s ease-in-out infinite; }
+    .phase-bar.terminal .phase-seg:nth-child(3) .phase-dot { background: #167347; }
+    .phase-bar.recovery .phase-seg { border-color: #e8b45a; }
+    .phase-bar.recovery .phase-seg:nth-child(2) { background: #fff3e0; color: #b25e09; font-weight: 650; }
+    .phase-bar.recovery .phase-seg:nth-child(2) .phase-dot { background: #b25e09; }
+    /* 关键字段网格：运行中整区浅色高亮，终态回落常色。 */
+    .key-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 12px; }
+    .field { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 9px; background: var(--dlz-bg-3); }
+    .field .k { font-size: 11px; color: var(--dlz-text-2); }
+    .field .v { overflow-wrap: anywhere; white-space: pre-wrap; }
+    .key-fields.hot .field { background: #eef4fb; background: color-mix(in srgb, var(--dlz-blue-bg) 55%, var(--dlz-bg-3)); }
+    .sub-fields { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; margin: 0 0 14px; }
+    .sub-fields .k { color: var(--dlz-text-2); }
+    .sub-fields .v { overflow-wrap: anywhere; white-space: pre-wrap; }
+    .result { margin: 0 0 15px; padding: 11px 12px; border-radius: 9px; background: var(--dlz-bg-3); }
     .result[hidden] { display: none; }
     .result p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
     .result p.expanded { max-height: 50vh; overflow-y: auto; }
     #result_toggle { margin-top: 8px; }
     .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    button { border: 1px solid var(--color-border-default, #d0d0d0); background: var(--color-background-primary, #fff); color: inherit; border-radius: 8px; padding: 7px 12px; cursor: pointer; font: inherit; }
+    button { border: 1px solid var(--dlz-border); background: var(--dlz-bg); color: inherit; border-radius: 8px; padding: 7px 12px; cursor: pointer; font: inherit; }
     button:disabled { opacity: .55; cursor: default; }
     button:focus-visible, input:focus-visible { outline: 2px solid #3085d6; outline-offset: 2px; }
     label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-    #message { min-height: 18px; margin: 10px 0 0; color: var(--color-text-secondary, #666); font-size: 12px; }
-    @media (max-width: 400px) { dl { grid-template-columns: 100px 1fr; } .card { padding: 14px; } }
+    #message { min-height: 18px; margin: 10px 0 0; color: var(--dlz-text-2); font-size: 12px; }
+    @media (max-width: 400px) {
+      .card { padding: 14px; }
+      .key-fields { grid-template-columns: 1fr; }
+      .sub-fields { grid-template-columns: 100px 1fr; }
+      .phase-bar { flex-direction: column; }
+    }
   </style>
 </head>
 <body>
-  <main class="card" aria-label="大力子任务卡">
+  <main class="card" id="card_root" aria-label="大力子任务卡">
     <header><h1>大力子任务卡</h1><span id="status" class="badge">WAITING</span></header>
-    <dl>
-      <dt>执行 Agent</dt><dd id="agent">—</dd>
-      <dt>项目</dt><dd id="project">—</dd>
-      <dt>已运行</dt><dd id="elapsed">—</dd>
-      <dt>当前活动</dt><dd id="current_activity">—</dd>
-      <dt>模型</dt><dd id="requested_model">—</dd>
-      <dt>思考强度</dt><dd id="effort">—</dd>
-      <dt>最后更新</dt><dd id="last_updated">—</dd>
-      <dt>心跳/观察</dt><dd id="liveness">—</dd>
-    </dl>
+    <div id="phase_bar" class="phase-bar" role="img" aria-label="任务阶段：排队、执行、终态">
+      <span class="phase-seg"><span class="phase-dot"></span>排队</span>
+      <span class="phase-seg"><span class="phase-dot"></span>执行</span>
+      <span class="phase-seg"><span class="phase-dot"></span>终态</span>
+    </div>
+    <section class="key-fields" id="key_fields">
+      <div class="field"><span class="k">已运行</span><span class="v" id="elapsed">—</span></div>
+      <div class="field"><span class="k">当前活动</span><span class="v" id="current_activity">—</span></div>
+      <div class="field"><span class="k">模型</span><span class="v" id="requested_model">—</span></div>
+      <div class="field"><span class="k">思考强度</span><span class="v" id="effort">—</span></div>
+    </section>
+    <section class="sub-fields">
+      <span class="k">执行 Agent</span><span class="v" id="agent">—</span>
+      <span class="k">项目</span><span class="v" id="project">—</span>
+      <span class="k">最后更新</span><span class="v" id="last_updated">—</span>
+      <span class="k">心跳/观察</span><span class="v" id="liveness">—</span>
+    </section>
     <section id="usage_block" class="result" hidden>
       <h2>用量</h2>
       <p id="usage"></p>
@@ -66,6 +121,9 @@
     (() => {
       'use strict';
       const fields = Object.fromEntries(['agent', 'project', 'elapsed', 'current_activity', 'requested_model', 'effort', 'last_updated', 'liveness', 'usage', 'result', 'status'].map(id => [id, document.getElementById(id)]));
+      const cardRoot = document.getElementById('card_root');
+      const phaseBar = document.getElementById('phase_bar');
+      const keyFields = document.getElementById('key_fields');
       const resultBlock = document.getElementById('result_block');
       const usageBlock = document.getElementById('usage_block');
       const resultToggle = document.getElementById('result_toggle');
@@ -75,8 +133,15 @@
       const pending = new Map();
       const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
       const AUTO_REFRESH_MS = 3000;
+      const ELAPSED_TICK_MS = 1000; // 走秒：每秒只重算已运行文本，不触发数据轮询
+      const SIZE_DEBOUNCE_MS = 150; // size-changed 去抖窗口
       const RESULT_PREVIEW_LIMIT = 500; // 缩略态字符上限
       const RESULT_LINE_LIMIT = 8; // 缩略态行数上限
+      const JOB_RESOURCE_URI_PREFIX = 'dlz://job/'; // CH1 只读资源通道（蓝图 §12.1）
+      // 徽章五态 + QUEUED 映射（沿用 .badge 基类扩展；未知状态落默认蓝）
+      const BADGE_CLASSES = { QUEUED: 'queued', RUNNING: 'running', COMPLETED: 'completed', FAILED: 'failed', CANCELLED: 'cancelled', RECOVERY_REQUIRED: 'recovery' };
+      // 阶段条映射：QUEUED→排队 / RUNNING→执行 / 三种终态→终态 / RECOVERY_REQUIRED→警示；不虚报百分比。
+      const PHASE_CLASSES = { QUEUED: 'queued', RUNNING: 'running', COMPLETED: 'terminal', FAILED: 'terminal', CANCELLED: 'terminal', RECOVERY_REQUIRED: 'recovery' };
       // 结果区就地展开状态（按 job_id 记忆）：刷新保持展开与滚动位置，切换 job 回到缩略默认。
       const resultExpansion = new Map(); // job_id -> { expanded: boolean, scrollTop: number }
       let currentResultText = ''; // 当前渲染的完整结果文本（供就地展开/收起复用）
@@ -86,12 +151,24 @@
       let jobId = null;
       let status = null;
       let terminal = false;
-      let timer = null;
+      let timer = null; // 3s 数据轮询计时器
+      let elapsedTimer = null; // 1s 走秒计时器（与轮询互不触发）
+      let elapsedBase = null; // 走秒起点（started_at ?? created_at），null = 无起点
+      let elapsedEnd = null; // 终态停表值（finished_at），null = 非终态
+      let sizeObserver = null; // ResizeObserver 实例（dispose 时断连）
+      let sizeDebounce = null; // size-changed 去抖计时器
+      let lastSizeWidth = null; // 上次上报宽度（无变化不重发）
+      let lastSizeHeight = null; // 上次上报高度
       let busy = false;
       let disposed = false;
       let lastRevision = null; // 已接受的 v2 快照 revision；null = 尚未接受过带 revision 的快照
       let lastSnapshot = null; // 最近一次成功渲染的快照（查询失败时保留展示）
       let pinnedOrigin = null; // 首帧运行时固定的宿主 origin
+      // CH1 双路径（蓝图 §12.1）：资源优先 = resources/read 免授权只读 GET；
+      // 首次读即一次性能力探测（不做周期探测），方法不存在/宿主无响应/结构不可用 →
+      // resourceChannel=false，本会话内永久降级 tools/call get_task（loadResult 兜底路径不变）。
+      let resourceChannel = true;
+      let resourceProbed = false;
 
       // 桥接收敛（蓝图 §8 / IMPLEMENTATION §5.7，按 T0 §3.2 结论）：
       // 宿主 origin 不可静态枚举（卡片 iframe 为 srcdoc+sandbox、无 allow-same-origin），
@@ -132,6 +209,23 @@
         if (hours > 0) return `${hours}h ${minutes}m`;
         if (minutes > 0) return `${minutes}m ${seconds}s`;
         return `${seconds}s`;
+      }
+      // 走秒解耦（P5 UX1 步骤 1）：快照到达只定起点/终点并渲染一次；
+      // 非终态由 1s 计时器仅重算已运行文本，不与 3s 数据轮询互触发；
+      // 终态 finished_at 定值停表。elapsedText 保留为单次快照的直接换算。
+      function elapsedTick() { renderElapsed(); }
+      elapsedTick.dlzTimerKind = 'elapsed'; // 计时器分类标记（数据轮询与走秒分流）
+      function renderElapsed() {
+        if (elapsedBase === null) { fields.elapsed.textContent = '—'; return; }
+        const end = elapsedEnd ?? Date.now();
+        fields.elapsed.textContent = duration(end - elapsedBase);
+      }
+      function startElapsed() {
+        if (elapsedTimer === null) elapsedTimer = setInterval(elapsedTick, ELAPSED_TICK_MS);
+      }
+      function stopElapsed() {
+        if (elapsedTimer !== null) clearInterval(elapsedTimer);
+        elapsedTimer = null;
       }
       function elapsedText(task) {
         const start = toMillis(task.started_at) ?? toMillis(task.created_at);
@@ -216,6 +310,49 @@
         if (!timer) timer = setInterval(refresh, AUTO_REFRESH_MS);
       }
 
+      // 宿主主题热更（P5 UX1 步骤 5）：host-context-changed 的 theme 写 dataset 锁定，
+      // styles.variables 的原生命量（含宿主 --cb-* 集）落到根元素。
+      // 首帧 hostContext 可能为空对象：无 theme 时不动 dataset，保持 CSS 层
+      // color-scheme: light dark 兜底，待首条通知再锁定。
+      function applyHostContext(hostContext) {
+        if (hostContext === null || typeof hostContext !== 'object') return;
+        const theme = hostContext.theme;
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.dataset.theme = theme;
+        }
+        const variables = hostContext.styles?.variables;
+        if (variables !== null && typeof variables === 'object' && !Array.isArray(variables)) {
+          for (const [name, value] of Object.entries(variables)) {
+            if (name.startsWith('--') && typeof value === 'string') {
+              document.documentElement.style.setProperty(name, value);
+            }
+          }
+        }
+      }
+
+      // size-changed 上报（P5 UX1 步骤 6，MCP Apps spec 2026-01-26）：
+      // ResizeObserver 观察根卡片，高度/宽度变化经去抖后向宿主发尺寸通知，防 inline 截断。
+      function reportSize() {
+        if (disposed || sizeObserver === null) return;
+        const width = typeof cardRoot.offsetWidth === 'number' ? cardRoot.offsetWidth : null;
+        const height = typeof cardRoot.offsetHeight === 'number' ? cardRoot.offsetHeight : null;
+        if (width === null || height === null) return;
+        if (width === lastSizeWidth && height === lastSizeHeight) return; // 尺寸未变不重发
+        lastSizeWidth = width;
+        lastSizeHeight = height;
+        send('ui/notifications/size-changed', { width, height });
+      }
+      function queueSizeReport() {
+        if (disposed || sizeObserver === null) return;
+        if (sizeDebounce !== null) clearTimeout(sizeDebounce);
+        sizeDebounce = setTimeout(() => { sizeDebounce = null; reportSize(); }, SIZE_DEBOUNCE_MS);
+      }
+      function watchSize() {
+        if (typeof ResizeObserver !== 'function' || cardRoot === null) return;
+        sizeObserver = new ResizeObserver(() => queueSizeReport());
+        sizeObserver.observe(cardRoot);
+      }
+
       // 防旧响应（蓝图 §6.4）：仅当 job_id 匹配且 revision 更新时替换快照；
       // v1 快照（无 revision 字段）仅在从未接受过 v2 revision 时兼容接受，此后降级响应一律拒绝。
       function acceptsSnapshot(task) {
@@ -231,6 +368,11 @@
         }
         fields.status.textContent = '—';
         fields.status.className = 'badge';
+        phaseBar.className = 'phase-bar';
+        keyFields.className = 'key-fields';
+        stopElapsed();
+        elapsedBase = null;
+        elapsedEnd = null;
         fields.result.textContent = '';
         fields.result.className = '';
         fields.result.scrollTop = 0;
@@ -303,7 +445,8 @@
         const value = name => (typeof task[name] === 'string' && task[name].length > 0 ? task[name] : '—');
         fields.agent.textContent = value('agent');
         fields.project.textContent = value('project');
-        fields.elapsed.textContent = elapsedText(task);
+        elapsedBase = toMillis(task.started_at) ?? toMillis(task.created_at);
+        renderElapsed();
         fields.current_activity.textContent = activityText(task);
         fields.requested_model.textContent = value('requested_model');
         fields.effort.textContent = value('effort');
@@ -318,16 +461,41 @@
         resultBlock.hidden = result === '';
         status = typeof task.status === 'string' && task.status.length > 0 ? task.status : 'UNKNOWN';
         terminal = TERMINAL_STATUSES.has(status);
+        elapsedEnd = terminal ? toMillis(task.finished_at) : null; // 终态 reading：以 finished_at 停表
+        renderElapsed();
+        if (elapsedBase !== null && !terminal) startElapsed(); else stopElapsed();
         fields.status.textContent = status;
-        fields.status.className = `badge ${status === 'COMPLETED' ? 'completed' : status === 'FAILED' ? 'failed' : status === 'CANCELLED' ? 'cancelled' : status === 'RECOVERY_REQUIRED' ? 'recovery' : ''}`;
+        fields.status.className = `badge ${BADGE_CLASSES[status] ?? ''}`.trim();
+        phaseBar.className = `phase-bar ${PHASE_CLASSES[status] ?? ''}`.trim();
+        keyFields.className = terminal ? 'key-fields' : 'key-fields hot';
         autoBox.disabled = terminal;
         message.textContent = statusMessage(status, terminal);
         updateAuto();
+        queueSizeReport(); // 快照可能改变卡片高度（结果区展开/长文本）
       }
       function useResult(result) {
         if (result?.isError) throw new Error(result.content?.[0]?.text ?? 'Tool failed');
         const task = result?.structuredContent ?? JSON.parse(result?.content?.[0]?.text ?? 'null');
         showTask(task);
+      }
+
+      // CH1 资源响应 → TaskSnapshot：contents[0].text 为与 get_task structuredContent
+      // 完全同形的 JSON 文本（蓝图 §12.1）；结构不可用 = 宿主未实现资源通道的判定信号。
+      function resourceTaskOf(result) {
+        const text = Array.isArray(result?.contents) ? result.contents[0]?.text : null;
+        if (typeof text !== 'string') {
+          const error = new Error('资源响应不可用（缺少 JSON 文本）');
+          error.resourceChannelUnavailable = true;
+          throw error;
+        }
+        return JSON.parse(text);
+      }
+      // 宿主层方法不可用信号：未实现 resources/read（method not found 类）或静默无响应
+      // （send 5s 超时）。资源/传输性失败（如 Resource not found）不在此列——通道可达，不降级。
+      function isResourceChannelUnavailable(error) {
+        if (error?.resourceChannelUnavailable === true) return true;
+        const message = error instanceof Error ? error.message : String(error ?? '');
+        return /method not found|unknown method|not supported|unsupported|宿主未响应/i.test(message);
       }
 
       // 查询失败 ≠ job 失败（蓝图 §6.5）：保留上次成功快照，显示错误与最后更新时间，允许重试。
@@ -343,16 +511,31 @@
         busy = true;
         refreshButton.disabled = true;
         try {
-          let result;
           if (initialized && serverTools) {
-            result = await send('tools/call', { name: 'get_task', arguments: { job_id: jobId } }, true);
+            if (resourceChannel && !resourceProbed) {
+              // 首次资源读 = 一次性能力探测：失败信号出现即标记能力缺失，本会话内永久降级
+              // tools/call get_task，并立即以工具路径完成本次刷新（降级不造成功能缺失）。
+              try {
+                showTask(resourceTaskOf(await send('resources/read', { uri: `${JOB_RESOURCE_URI_PREFIX}${jobId}` }, true)));
+                resourceProbed = true;
+              } catch (probeError) {
+                if (!isResourceChannelUnavailable(probeError)) throw probeError; // 传输/业务失败：等同查询失败，不降级
+                resourceChannel = false;
+                useResult(await send('tools/call', { name: 'get_task', arguments: { job_id: jobId } }, true));
+              }
+            } else if (resourceChannel) {
+              // 资源优先（免授权只读 GET）：查询性失败语义等同查询失败——保留快照、提示、可重试。
+              showTask(resourceTaskOf(await send('resources/read', { uri: `${JOB_RESOURCE_URI_PREFIX}${jobId}` }, true)));
+            } else {
+              // 永久降级路径：tools/call get_task 兜底（CH1 前行为零回退）。
+              useResult(await send('tools/call', { name: 'get_task', arguments: { job_id: jobId } }, true));
+            }
           } else if (typeof window.openai?.callTool === 'function') {
             // T0 C4：WorkBuddy 宿主无 window.openai（app.asar 0 命中）；仅作其他宿主过渡回退保留。
-            result = await window.openai.callTool('get_task', { job_id: jobId });
+            useResult(await window.openai.callTool('get_task', { job_id: jobId }));
           } else {
             throw new Error('MCP Apps 宿主未提供 serverTools 能力');
           }
-          useResult(result);
           // 查询成功：即使快照因重复/过旧 revision 未替换，也清除历史失败提示，回到当前状态提示。
           if (lastSnapshot !== null) message.textContent = statusMessage(status, terminal);
         } catch (error) {
@@ -365,6 +548,9 @@
       function dispose() {
         disposed = true;
         stopAuto();
+        stopElapsed();
+        if (sizeObserver !== null) { sizeObserver.disconnect(); sizeObserver = null; }
+        if (sizeDebounce !== null) { clearTimeout(sizeDebounce); sizeDebounce = null; }
         for (const item of pending.values()) { clearTimeout(item.timeout); item.reject(new Error('卡片已卸载')); }
         pending.clear();
       }
@@ -401,6 +587,8 @@
           refreshButton.disabled = !jobId;
         } else if (packet.method === 'ui/notifications/tool-result') {
           try { useResult(packet.params); } catch (error) { reportQueryFailure(error); }
+        } else if (packet.method === 'ui/notifications/host-context-changed') {
+          applyHostContext(packet.params);
         } else if (packet.method === 'ui/resource-teardown' && Object.hasOwn(packet, 'id')) {
           dispose();
           postToHost({ jsonrpc: '2.0', id: packet.id, result: {} });
@@ -419,10 +607,12 @@
           if (disposed) return;
           initialized = true;
           serverTools = Boolean(result?.hostCapabilities?.serverTools);
+          applyHostContext(result?.hostContext); // 首帧 hostContext 可能为空对象（已知行为），空则保持 CSS 兜底
           send('ui/notifications/initialized', {});
           message.textContent = '等待任务…';
         })
         .catch(error => { if (!disposed) message.textContent = error.message; });
+      watchSize(); // ResizeObserver 常驻观察根卡片，高度变化去抖上报，防 inline 截断
     })();
   </script>
 </body>

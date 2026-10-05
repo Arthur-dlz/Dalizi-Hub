@@ -337,6 +337,23 @@ test("listNonTerminal returns only jobs awaiting recovery and ignores tmp leftov
   }
 });
 
+test("listAll skips operational JSON files without job_id (registry/roots) — P5 OPS3 live fix", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-ops-"));
+  try {
+    const store = new JobStore(directory);
+    await store.create({ job_id: "queued-1", status: "QUEUED", created_at: "2026-10-04T09:00:00.000Z" });
+    // 同目录运营文件：文件名过 JOB_FILE_PATTERN、内容为合法 JSON、无 job_id——
+    // 修复前会被 normalizeRead v1 兼容补齐后误当无终态 job 混入 listAll/listNonTerminal/listBoard。
+    await writeFile(path.join(directory, "project-registry.json"), JSON.stringify({ projects: [{ alias: "dlz", cwd: "D:\\x", enabled: true }] }));
+    await writeFile(path.join(directory, "workspace-roots.json"), JSON.stringify({ roots: ["D:\\x"] }));
+
+    assert.deepEqual((await store.listAll()).map((record) => record.job_id), ["queued-1"]);
+    assert.deepEqual((await store.listNonTerminal()).map((record) => record.job_id), ["queued-1"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("listAll refuses to silently skip a corrupt snapshot", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dalizi-corrupt-"));
   try {

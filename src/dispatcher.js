@@ -19,6 +19,29 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+// 二分找最大可见前缀：载荷序列化不超过 BOARD_MAX_BYTES 的最大条数。
+// 测量固定以 truncated=false 计（比最终 true 长 1 字节，保守），保证最终响应必然在限内。
+function largestPrefixWithinBudget(jobs, total, windowTruncated) {
+  const payloadBytes = (count) => Buffer.byteLength(
+    JSON.stringify({ jobs: jobs.slice(0, count), truncated: false, total }),
+    "utf8",
+  );
+  let low = 0;
+  let high = jobs.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (payloadBytes(middle) <= BOARD_MAX_BYTES) low = middle;
+    else high = middle - 1;
+  }
+  return low;
+}
+
+// P5 只读看板聚合边界（蓝图 §12.2 / IMPLEMENTATION §9.1 实现声明常量）：
+// 终态窗口 50 条（按 finished_at 降序取最近）+ 响应字节上限 1 MiB；
+// 超限按同序截断并保留 total 与截断标记，不静默丢弃。
+export const BOARD_TERMINAL_WINDOW = 50;
+export const BOARD_MAX_BYTES = 1024 * 1024;
+
 // 展示辅助：owner 心跳是否已过期（true/false）；从未观测返回 null（不可观测，不伪造）。
 export function isOwnerHeartbeatStale(liveness, { atMs = Date.now(), thresholdMs = OWNER_HEARTBEAT_STALE_MS } = {}) {
   const heartbeatMs = liveness && typeof liveness.owner_heartbeat_at === "string"
@@ -127,6 +150,32 @@ export class Dispatcher {
 
   async get(jobId) {
     return this.store.get(jobId);
+  }
+
+  // P5 只读看板聚合（蓝图 §12.2 / IMPLEMENTATION §9.1）：store 两个只读 list 合并为
+  // 快照信封数组——非终态全量在前（updated_at 降序），终态按 finished_at 降序取最近
+  // BOARD_TERMINAL_WINDOW 条；整体再受 BOARD_MAX_BYTES 字节上限约束，超限按同序从尾部
+  // 截断并置 truncated。纯只读：不写 store、不动实例锁、不触发恢复扫描。
+  // 终态集合权威归 store（listNonTerminal 的补集），此处不复制状态集。
+  async listBoard() {
+    const all = await this.store.listAll();
+    const nonTerminal = await this.store.listNonTerminal();
+    const nonTerminalIds = new Set(nonTerminal.map((record) => record.job_id));
+    const total = all.length;
+    const orderedNonTerminal = [...nonTerminal].sort((left, right) =>
+      String(right.updated_at ?? "").localeCompare(String(left.updated_at ?? "")));
+    const orderedTerminal = all
+      .filter((record) => !nonTerminalIds.has(record.job_id))
+      .sort((left, right) => String(right.finished_at ?? "").localeCompare(String(left.finished_at ?? "")));
+    const windowedTerminal = orderedTerminal.slice(0, BOARD_TERMINAL_WINDOW);
+    const jobs = [...orderedNonTerminal, ...windowedTerminal];
+    const windowTruncated = orderedTerminal.length > windowedTerminal.length;
+    const visible = largestPrefixWithinBudget(jobs, total, windowTruncated);
+    return {
+      jobs: jobs.slice(0, visible),
+      truncated: windowTruncated || visible < jobs.length,
+      total,
+    };
   }
 
   // 串行准入区间（IMPLEMENTATION §5.1）：区间内完成 lookup(request_id) → busy →

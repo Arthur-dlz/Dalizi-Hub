@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DLZ看板</title>
+  <style>
+    /* 看板页（P6 ZC1：ZCode RunPhaseList 视觉语言 —— 垂直 spine 阶段带 + 任务行卡）。
+       数据通道与降级逻辑（EventSource 直连 / dlz://board 资源轮询 / tool-result /
+       setChannel 诚实标注 / dispose 清理）与 P5 CH2/CH3 完全一致，一行未动；
+       本文件仅重构「渲染层 + 样式」，DLZ 语义 → ZCode 视觉映射：
+         - 三态阶段带 = 组灯（stage-light）+ 阶段名 + 计数；垂直 spine 连接（RunPhaseList）。
+         - 每 job = 行卡（job-row）：状态徽章（五态不动）+ job_id 截断 + 本地走秒 + meta 行。
+         - 非终态区置顶且自动展开（活细节）；终态窗口收拢为紧凑行卡；空态「（无任务）」。
+       原生 ES 模块零依赖；静态 HTML 不内置任何凭据。
+       浏览器态（window.parent === window）：token 取自页面 URL query（read_token），
+       /api/jobs 初载 + 纯 SSE /events 断线重连（CH2 原行为，present_files 挂载）。
+       widget 态（MCP Apps iframe）：与宿主握手后由 tool-result 取得 board_url/read_token；
+       EventSource 优先（connectDomains 申报本地 origin），启动期失败自动降级
+       resources/read('dlz://board') 2s 轮询；底部数据源声明按实际通道诚实标注。 */
+    :root {
+      color-scheme: light dark;
+      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+      --dlz-text: var(--cb-color-text-primary, var(--color-text-primary, light-dark(#202123, #e8e9ec)));
+      --dlz-text-2: var(--cb-color-text-secondary, var(--color-text-secondary, light-dark(#6b6b6b, #9a9ca5)));
+      --dlz-text-3: var(--cb-color-text-tertiary, var(--color-text-tertiary, light-dark(#9a9ca5, #6f7280)));
+      --dlz-bg: var(--cb-color-background-primary, var(--color-background-primary, light-dark(#f6f7f9, #14151a)));
+      --dlz-bg-2: var(--cb-color-background-secondary, var(--color-background-secondary, light-dark(#ffffff, #1d1f26)));
+      --dlz-bg-3: var(--cb-color-background-tertiary, var(--color-background-tertiary, light-dark(#eceef2, #24262e)));
+      --dlz-border: var(--cb-color-border-default, var(--color-border-default, light-dark(#dedede, #33353d)));
+      --dlz-blue-bg: var(--cb-color-accent-bg, light-dark(#e9f4ff, #16324a));
+      --dlz-blue-fg: var(--cb-color-accent-fg, light-dark(#1264a3, #7cc0f5));
+    }
+    :root[data-theme="light"] { color-scheme: light; }
+    :root[data-theme="dark"] { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 16px; color: var(--dlz-text); background: var(--dlz-bg); }
+    header.board-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .board-title h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+    .board-sub { margin: 2px 0 0; font-size: 11px; color: var(--dlz-text-3); }
+    .badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; background: var(--dlz-blue-bg); color: var(--dlz-blue-fg); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .badge.queued { background: light-dark(#ececef, #2a2b31); color: light-dark(#5c5c66, #b9bac2); }
+    .badge.running { background: var(--dlz-blue-bg); color: var(--dlz-blue-fg); }
+    .badge.running::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: dlz-pulse 1.2s ease-in-out infinite; }
+    .badge.completed { background: light-dark(#e5f6ed, #14301f); color: light-dark(#167347, #6fd39c); }
+    .badge.failed { background: light-dark(#fce9e9, #3a1d1d); color: light-dark(#a33030, #f19a9a); }
+    .badge.cancelled { background: light-dark(#f2f0f7, #2a2540); color: light-dark(#5a4a86, #b3a6dd); }
+    .badge.recovery { background: light-dark(#fff3e0, #3a2a10); color: light-dark(#b25e09, #e8b45a); }
+    .badge.down { background: light-dark(#fce9e9, #3a1d1d); color: light-dark(#a33030, #f19a9a); }
+    .badge.pending { background: light-dark(#ececef, #2a2b31); color: light-dark(#5c5c66, #b9bac2); }
+    @keyframes dlz-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+    @media (prefers-reduced-motion: reduce) {
+      .badge.running::before { animation: none; }
+      .stage[data-live="true"][data-stage="active"] .stage-light::after { animation: none; }
+    }
+    #notice { margin: 0 0 12px; padding: 8px 12px; border-radius: 9px; background: light-dark(#fff3e0, #3a2a10); color: light-dark(#b25e09, #e8b45a); font-size: 12px; }
+    #notice[hidden] { display: none; }
+    #truncation { margin: 0 0 12px; color: var(--dlz-text-2); font-size: 12px; }
+    #truncation[hidden] { display: none; }
+    /* 底部数据源声明（禁区 setChannel 写入）：与实际通道一致，降级时如实标注。 */
+    #channel { margin: 12px 0 0; color: var(--dlz-text-2); font-size: 12px; }
+
+    /* ---------- 垂直 spine 阶段带（ZCode RunPhaseList 语言：组灯 + 行卡） ---------- */
+    .spine { display: flex; flex-direction: column; gap: 2px; }
+    .stage { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 10px; }
+    .stage-axis { position: relative; display: flex; justify-content: center; padding-top: 12px; }
+    .stage-axis::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-50%); background: var(--dlz-border); }
+    .stage:first-child .stage-axis::before { top: 12px; }
+    .stage:last-child .stage-axis::before { bottom: auto; height: 22px; }
+    .stage-light { position: relative; z-index: 1; width: 11px; height: 11px; border-radius: 50%; background: var(--dlz-bg); border: 2px solid var(--dlz-border); }
+    .stage[data-live="true"][data-stage="queued"] .stage-light { border-color: light-dark(#9a9ca5, #6f7280); background: light-dark(#c8cad0, #4a4c55); }
+    .stage[data-live="true"][data-stage="active"] .stage-light { border-color: var(--dlz-blue-fg); background: var(--dlz-blue-fg); box-shadow: 0 0 0 4px var(--dlz-blue-bg); }
+    .stage[data-live="true"][data-stage="active"] .stage-light::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 1px solid var(--dlz-blue-fg); animation: dlz-pulse 1.6s ease-in-out infinite; }
+    .stage-head { display: flex; align-items: center; gap: 8px; padding: 10px 0 6px; }
+    .stage-name { font-size: 12px; font-weight: 650; color: var(--dlz-text-2); }
+    .stage-count { font-size: 11px; color: var(--dlz-text-3); background: var(--dlz-bg-3); border-radius: 999px; padding: 1px 7px; }
+    .stage-body { display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
+    .stage-body.compact { gap: 4px; }
+
+    .empty { color: var(--dlz-text-3); font-size: 12px; padding: 4px 2px; }
+    /* 任务行卡（job = pill/行卡）：运行中高亮（灯亮语义），失败/恢复警示色但不用大字报。 */
+    .job-row { border: 1px solid var(--dlz-border); border-radius: 10px; padding: 9px 12px; background: var(--dlz-bg-2); }
+    .job-row.active-job { border-color: var(--dlz-blue-fg); background: var(--dlz-blue-bg); }
+    .job-row.alert { border-color: light-dark(#e0a35c, #6b4a1c); }
+    .row-head { display: flex; align-items: center; gap: 8px; }
+    .job-id { font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dlz-text-2); }
+    .row-head .job-id { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row-elapsed { margin-left: auto; font-size: 11px; color: var(--dlz-text-2); white-space: nowrap; }
+    .row-elapsed b { font-weight: 600; }
+    .job-row.active-job .row-elapsed { color: var(--dlz-text); }
+    .job-meta { margin-top: 5px; font-size: 12px; color: var(--dlz-text); overflow-wrap: anywhere; }
+    .job-meta .dim { color: var(--dlz-text-3); }
+    .job-line { margin-top: 3px; font-size: 12px; color: var(--dlz-text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+    .job-line b { color: var(--dlz-text); font-weight: 600; }
+    .job-row.compact { padding: 6px 10px; }
+    @media (max-width: 560px) { .row-head { flex-wrap: wrap; } .row-elapsed { margin-left: 0; } }
+  </style>
+</head>
+<body>
+  <header class="board-header">
+    <div class="board-title">
+      <h1>DLZ看板</h1>
+      <p class="board-sub">ZCode 风格 · 阶段带 / 任务行卡</p>
+    </div>
+    <span id="connection" class="badge pending">初始化…</span>
+  </header>
+  <p id="notice" role="status" hidden></p>
+  <p id="truncation" hidden></p>
+  <main class="spine" id="board_root">
+    <section class="stage" id="stage-queued" data-stage="queued" data-live="false">
+      <div class="stage-axis"><span class="stage-light" aria-hidden="true"></span></div>
+      <div class="stage-head"><span class="stage-name">排队</span><span class="stage-count" id="count-queued">0</span></div>
+      <div class="stage-body" id="column-queued"></div>
+    </section>
+    <section class="stage" id="stage-active" data-stage="active" data-live="false">
+      <div class="stage-axis"><span class="stage-light" aria-hidden="true"></span></div>
+      <div class="stage-head"><span class="stage-name">执行中</span><span class="stage-count" id="count-active">0</span></div>
+      <div class="stage-body" id="column-active"></div>
+    </section>
+    <section class="stage" id="stage-terminal" data-stage="terminal" data-live="false">
+      <div class="stage-axis"><span class="stage-light" aria-hidden="true"></span></div>
+      <div class="stage-head"><span class="stage-name">终态</span><span class="stage-count" id="count-terminal">0</span></div>
+      <div class="stage-body compact" id="column-terminal"></div>
+    </section>
+  </main>
+  <p id="channel">数据源：—</p>
+  <script type="module">
+    "use strict";
+    const TERMINAL_STATUSES = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
+    const BADGE_CLASSES = { QUEUED: "queued", RUNNING: "running", COMPLETED: "completed", FAILED: "failed", CANCELLED: "cancelled", RECOVERY_REQUIRED: "recovery" };
+    const COLUMN_STATUSES = { queued: ["QUEUED"], active: ["RUNNING", "RECOVERY_REQUIRED"], terminal: ["COMPLETED", "FAILED", "CANCELLED"] };
+    const ELAPSED_TICK_MS = 1000;
+    const RECONNECT_DELAY_MS = 3000;
+    // CH3 widget 双通道：SSE 启动期超时（onerror 静默不触发时的确定性兜底）与资源轮询间隔。
+    const SSE_STARTUP_TIMEOUT_MS = 3000;
+    const POLL_INTERVAL_MS = 2000;
+    const SIZE_DEBOUNCE_MS = 150; // size-changed 去抖（与 UX1 同族）
+    const BOARD_RESOURCE_URI = "dlz://board"; // 资源轮询兜底通道（蓝图 §12.2）
+
+    const connection = document.getElementById("connection");
+    const notice = document.getElementById("notice");
+    const truncation = document.getElementById("truncation");
+    const channel = document.getElementById("channel");
+    const boardRoot = document.getElementById("board_root");
+    const columnBodies = new Map();
+    for (const key of ["queued", "active", "terminal"]) {
+      columnBodies.set(key, document.getElementById(`column-${key}`));
+    }
+    // 阶段带（spine）三态容器与计数：渲染时同步 data-live（组灯亮/灭）与计数。
+    const stageSections = new Map();
+    const stageCounts = new Map();
+    for (const key of ["queued", "active", "terminal"]) {
+      stageSections.set(key, document.getElementById(`stage-${key}`));
+      stageCounts.set(key, document.getElementById(`count-${key}`));
+    }
+    const jobs = new Map(); // job_id -> 最近快照（SSE diff 合并 / 资源轮询全量替换）
+    let source = null;
+    let elapsedTimer = null;
+    let reconnectTimer = null;
+    let disposed = false;
+    let readToken = null; // 仅浏览器态：token 取自本页 URL query（IMPLEMENTATION §9.4）
+    // widget 态（MCP Apps iframe）专用状态：浏览器态不走下列字段。
+    const pending = new Map();
+    let nextId = 1;
+    let pinnedOrigin = null;
+    let sseOpened = false;
+    let sseStartupTimer = null;
+    let pollTimer = null;
+    let pollBusy = false;
+    let sizeObserver = null;
+    let sizeDebounce = null;
+    let lastSizeWidth = null;
+    let lastSizeHeight = null;
+
+    function showNotice(text) { notice.textContent = text; notice.hidden = false; }
+    function hideNotice() { notice.hidden = true; }
+    function setConnection(label, kind) {
+      connection.textContent = label;
+      connection.className = `badge ${kind}`;
+    }
+    // 底部数据源声明：与实际通道一致；SSE 不可达/凭据缺失时如实标注降级。
+    function setChannel(text) { channel.textContent = `数据源：${text}`; }
+
+    function toMillis(value) {
+      if (typeof value !== "string" || value.length === 0) return null;
+      const ms = Date.parse(value);
+      return Number.isFinite(ms) ? ms : null;
+    }
+    function stamp(ms) {
+      const iso = new Date(ms).toISOString();
+      return `${iso.slice(0, 10)} ${iso.slice(11, 19)}Z`;
+    }
+    function duration(ms) {
+      const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor(totalSeconds / 60) % 60;
+      const seconds = totalSeconds % 60;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      if (minutes > 0) return `${minutes}m ${seconds}s`;
+      return `${seconds}s`;
+    }
+    // 走秒（与 UX1 同族）：started_at ?? created_at 起步，终态 finished_at 停表；本地每秒重算。
+    function elapsedText(task) {
+      const start = toMillis(task.started_at) ?? toMillis(task.created_at);
+      if (start === null) return "—";
+      const end = toMillis(task.finished_at) ?? Date.now();
+      return duration(end - start);
+    }
+    function activityText(task) {
+      const activity = task.activity !== null && typeof task.activity === "object" && !Array.isArray(task.activity) ? task.activity : null;
+      if (activity !== null) {
+        const text = [activity.label, activity.state, activity.kind].find((part) => typeof part === "string" && part.length > 0) ?? null;
+        if (text !== null) return text;
+      }
+      return typeof task.current_activity === "string" && task.current_activity.length > 0 ? task.current_activity : "—";
+    }
+    // 子进程级字段（agent/pid/liveness/当前活动按 roster 风格嵌套）：进程/心跳只展示
+    // 实际观测到的证据（owner_heartbeat/last_event/last_output/process_checked/process_state），
+    // 缺失不编造；快照无 pid 顶层字段，进程身份以 liveness.process_state 等观测为准。
+    function processText(task) {
+      const liveness = task.liveness !== null && typeof task.liveness === "object" && !Array.isArray(task.liveness) ? task.liveness : null;
+      if (liveness === null) return "—";
+      const parts = [];
+      const heartbeat = toMillis(liveness.owner_heartbeat_at);
+      if (heartbeat !== null) parts.push(`心跳 ${stamp(heartbeat)}`);
+      const event = toMillis(liveness.last_event_at);
+      if (event !== null) parts.push(`事件 ${stamp(event)}`);
+      const output = toMillis(liveness.last_output_at);
+      if (output !== null) parts.push(`输出 ${stamp(output)}`);
+      const checked = toMillis(liveness.process_checked_at);
+      if (checked !== null) parts.push(`检查 ${stamp(checked)}`);
+      if (typeof liveness.process_state === "string" && liveness.process_state.length > 0) parts.push(`进程 ${liveness.process_state}`);
+      return parts.length === 0 ? "—" : parts.join(" · ");
+    }
+    // usage 摘要（蓝图 §5.6 诚实展示）：null≠0，未观测指标照实标注"不可观测"，不伪造 0。
+    function usageSummary(usage) {
+      if (usage === null || usage === undefined || typeof usage !== "object" || Array.isArray(usage) || Object.keys(usage).length === 0) {
+        return "用量：不可观测";
+      }
+      const parts = Object.entries(usage).map(([name, metric]) => {
+        if (metric === null || metric === undefined) return `${name} 不可观测`;
+        if (typeof metric === "number") return `${name} ${metric}`;
+        if (typeof metric === "object" && !Array.isArray(metric)) {
+          if (metric.value === null || metric.value === undefined) return `${name} 不可观测`;
+          const unit = typeof metric.unit === "string" && metric.unit.length > 0 ? ` ${unit}` : "";
+          return `${name} ${metric.value}${unit}`;
+        }
+        return `${name} ${String(metric)}`;
+      });
+      return `用量：${parts.join(" · ")}`;
+    }
+    function shortId(jobId) { return jobId.length > 8 ? `${jobId.slice(0, 8)}…` : jobId; }
+    function columnOf(status) {
+      for (const [key, statuses] of Object.entries(COLUMN_STATUSES)) {
+        if (statuses.includes(status)) return key;
+      }
+      return "active"; // 未知状态不虚报终态：暂归执行中列并保留原状态徽章
+    }
+    // 任务行卡（job = pill/行卡）：非终态显活细节（meta/活动/进程/用量），终态收拢为紧凑行卡。
+    function createJobRow(task, compact) {
+      const row = document.createElement("article");
+      const status = typeof task.status === "string" && task.status.length > 0 ? task.status : "UNKNOWN";
+      const badgeClass = BADGE_CLASSES[status] ?? "";
+      row.className = compact ? "job-row compact" : "job-row";
+      if (badgeClass === "running") row.className += " active-job";
+      if (badgeClass === "failed" || badgeClass === "recovery") row.className += " alert";
+      row.dataset.jobId = task.job_id;
+      const head = document.createElement("header");
+      head.className = "row-head";
+      const badge = document.createElement("span");
+      badge.className = `badge ${badgeClass}`.trim();
+      badge.textContent = status;
+      const id = document.createElement("span");
+      id.className = "job-id";
+      id.textContent = shortId(task.job_id);
+      const elapsed = document.createElement("div");
+      elapsed.className = "row-elapsed job-line";
+      const elapsedLabel = document.createElement("b");
+      elapsedLabel.textContent = "已运行 ";
+      elapsed.append(elapsedLabel, document.createTextNode(elapsedText(task)));
+      head.append(badge, id, elapsed);
+      row.append(head);
+      if (compact) return row; // 终态窗口：紧凑行卡（徽章 + job_id + 已运行）
+      const meta = document.createElement("div");
+      meta.className = "job-meta";
+      const agent = document.createElement("span");
+      agent.textContent = typeof task.agent === "string" && task.agent.length > 0 ? task.agent : "—";
+      const dim = document.createElement("span");
+      dim.className = "dim";
+      dim.textContent = " · ";
+      const project = document.createElement("span");
+      project.textContent = typeof task.project === "string" && task.project.length > 0 ? task.project : "—";
+      meta.append(agent, dim, project);
+      const activity = document.createElement("div");
+      activity.className = "job-line";
+      const activityLabel = document.createElement("b");
+      activityLabel.textContent = "活动 ";
+      activity.append(activityLabel, document.createTextNode(activityText(task)));
+      const proc = document.createElement("div");
+      proc.className = "job-line";
+      const procLabel = document.createElement("b");
+      procLabel.textContent = "进程/心跳 ";
+      proc.append(procLabel, document.createTextNode(processText(task)));
+      const usage = document.createElement("div");
+      usage.className = "job-line";
+      usage.textContent = usageSummary(task.usage);
+      row.append(meta, activity, proc, usage);
+      return row;
+    }
+    function render() {
+      const buckets = new Map([["queued", []], ["active", []], ["terminal", []]]);
+      for (const task of jobs.values()) buckets.get(columnOf(task.status)).push(task);
+      for (const [key, body] of columnBodies) {
+        const list = buckets.get(key) ?? [];
+        const stage = stageSections.get(key);
+        if (stage) stage.dataset.live = list.length > 0 ? "true" : "false";
+        const count = stageCounts.get(key);
+        if (count) count.textContent = String(list.length);
+        if (list.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "empty";
+          empty.textContent = "（无任务）";
+          body.replaceChildren(empty);
+          continue;
+        }
+        body.replaceChildren(...list.map((task) => createJobRow(task, key === "terminal")));
+      }
+      truncation.hidden = false;
+      truncation.textContent = `当前 ${jobs.size} 张卡`;
+    }
+    function renderTruncation(board) {
+      if (board?.truncated !== true) { truncation.hidden = true; return; }
+      truncation.hidden = false;
+      truncation.textContent = `结果已截断：当前 ${jobs.size} 张卡 / 全量 ${board.total} 条（终态窗口与字节上限规则见契约）`;
+    }
+    // 全量载荷替换（tool-result 摘要初载 / 资源轮询快照）：先清后填，
+    // 滑出终态窗口的 job 不再展示（与 dlz://board 载荷范围一致）。
+    function replaceJobs(list) {
+      jobs.clear();
+      for (const job of Array.isArray(list) ? list : []) {
+        if (job !== null && typeof job === "object" && typeof job.job_id === "string") jobs.set(job.job_id, job);
+      }
+    }
+    function elapsedTick() {
+      for (const card of document.querySelectorAll(".job-row")) {
+        const task = jobs.get(card.dataset.jobId);
+        const line = card.querySelector(".job-line b");
+        if (task && line) line.nextSibling.textContent = elapsedText(task);
+      }
+    }
+    elapsedTick.dlzTimerKind = "elapsed"; // 计时器分类标记（数据轮询与走秒分流）
+    function startElapsed() {
+      if (disposed || elapsedTimer !== null) return;
+      elapsedTimer = setInterval(elapsedTick, ELAPSED_TICK_MS);
+    }
+    function stopElapsed() {
+      if (elapsedTimer !== null) { clearInterval(elapsedTimer); elapsedTimer = null; }
+    }
+
+    // ---------- MCP Apps 桥（widget 态，与 UX1/CH1 同族收敛） ----------
+    // iframe 为 opaque origin，宿主 origin 不可静态枚举：首个合法封套到达后以其
+    // event.origin 运行时固定；此后接收端校验一致性，发送端 targetOrigin 收紧
+    //（固定值为 "null" 时保留 '*' 过渡）。
+    function postToHost(packet) {
+      window.parent.postMessage(packet, pinnedOrigin !== null && pinnedOrigin !== "null" ? pinnedOrigin : "*");
+    }
+    function send(method, params, expectReply = false) {
+      const packet = { jsonrpc: "2.0", method, params };
+      if (!expectReply) { postToHost(packet); return Promise.resolve(); }
+      packet.id = nextId++;
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => { pending.delete(packet.id); reject(new Error("MCP Apps 宿主未响应")); }, 5000);
+        pending.set(packet.id, { resolve, reject, timeout });
+        postToHost(packet);
+      });
+    }
+    // 宿主主题热更（与 UX1 同族）：theme 写 dataset 锁定，宿主 --cb-* 变量落根元素；
+    // 首帧 hostContext 可能为空对象（已知行为），空则保持 CSS 层 light-dark() 兜底。
+    function applyHostContext(hostContext) {
+      if (hostContext === null || typeof hostContext !== "object") return;
+      const theme = hostContext.theme;
+      if (theme === "light" || theme === "dark") {
+        document.documentElement.dataset.theme = theme;
+      }
+      const variables = hostContext.styles?.variables;
+      if (variables !== null && typeof variables === "object" && !Array.isArray(variables)) {
+        for (const [name, value] of Object.entries(variables)) {
+          if (name.startsWith("--") && typeof value === "string") {
+            document.documentElement.style.setProperty(name, value);
+          }
+        }
+      }
+    }
+    // size-changed 上报（与 UX1 同族）：ResizeObserver 观察看板根，去抖后上报，防 inline 截断。
+    function reportSize() {
+      if (disposed || sizeObserver === null) return;
+      const width = typeof boardRoot.offsetWidth === "number" ? boardRoot.offsetWidth : null;
+      const height = typeof boardRoot.offsetHeight === "number" ? boardRoot.offsetHeight : null;
+      if (width === null || height === null) return;
+      if (width === lastSizeWidth && height === lastSizeHeight) return;
+      lastSizeWidth = width;
+      lastSizeHeight = height;
+      send("ui/notifications/size-changed", { width, height });
+    }
+    function queueSizeReport() {
+      if (disposed || sizeObserver === null) return;
+      if (sizeDebounce !== null) clearTimeout(sizeDebounce);
+      sizeDebounce = setTimeout(() => { sizeDebounce = null; reportSize(); }, SIZE_DEBOUNCE_MS);
+    }
+    function watchSize() {
+      if (typeof ResizeObserver !== "function" || boardRoot === null) return;
+      sizeObserver = new ResizeObserver(() => queueSizeReport());
+      sizeObserver.observe(boardRoot);
+    }
+
+    // ---------- widget 双通道（CH3：SSE 优先，资源轮询兜底） ----------
+    function closeSource() {
+      if (sseStartupTimer !== null) { clearTimeout(sseStartupTimer); sseStartupTimer = null; }
+      if (source !== null) {
+        source.onopen = null;
+        source.onmessage = null;
+        source.onerror = null;
+        source.close();
+        source = null;
+      }
+      sseOpened = false;
+    }
+    // 通道一：EventSource 直连 /events（board_url 同源，token 经 query 携带）。
+    function connectSse(boardUrl) {
+      let eventsUrl = null;
+      try {
+        eventsUrl = new URL(boardUrl);
+        eventsUrl.pathname = "/events";
+      } catch {
+        startPolling("board_url 不是合法 URL，无法建立 SSE 连接");
+        return;
+      }
+      setConnection("连接中…", "pending");
+      setChannel(`SSE 实时推送（${eventsUrl.origin}/events，约 1s diff）`);
+      try {
+        source = new EventSource(eventsUrl.toString());
+      } catch {
+        startPolling("宿主未提供可用的 EventSource");
+        return;
+      }
+      source.onopen = () => {
+        if (disposed) return;
+        sseOpened = true;
+        if (sseStartupTimer !== null) { clearTimeout(sseStartupTimer); sseStartupTimer = null; }
+        setConnection("SSE 已连接", "completed");
+        hideNotice();
+        startElapsed();
+      };
+      source.onmessage = (event) => {
+        if (disposed) return;
+        let frame;
+        try { frame = JSON.parse(event.data); } catch { return; }
+        const snapshot = frame !== null && typeof frame === "object" ? frame.snapshot : null;
+        if (!snapshot || typeof snapshot.job_id !== "string") return;
+        jobs.set(snapshot.job_id, snapshot);
+        render();
+      };
+      source.onerror = () => {
+        if (disposed) return;
+        if (!sseOpened) {
+          // 启动期即失败（CSP connect-src 拦截 / 端点 401/403 / 网络不可达）：闭源降级，
+          // 本会话不再回退 SSE——LV2 未 live 验证前的确定性兜底（A11 降级声明）。
+          closeSource();
+          startPolling("SSE 连接未建立（宿主 CSP 或本地端点不可达）");
+          return;
+        }
+        setConnection("SSE 已断开", "down");
+        showNotice("实时连接断开，正在自动重连；已加载数据保持展示。");
+        if (source !== null && source.readyState === EventSource.CLOSED) {
+          source.close();
+          source = null;
+          sseOpened = false;
+          if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => { if (!disposed) connectSse(boardUrl); }, RECONNECT_DELAY_MS);
+        }
+      };
+      // 启动期超时兜底：onerror 不触发（静默挂起）时也能确定性地降级到资源轮询。
+      sseStartupTimer = setTimeout(() => {
+        if (disposed || sseOpened) return;
+        closeSource();
+        startPolling("SSE 连接超时未建立");
+      }, SSE_STARTUP_TIMEOUT_MS);
+    }
+    // 通道二：resources/read('dlz://board') 资源轮询（免授权只读 GET）。
+    function startPolling(reason) {
+      closeSource();
+      setConnection("资源轮询（2s）", "running");
+      setChannel(`dlz://board 资源轮询（约 2s）${reason ? `；${reason}` : ""}`);
+      if (reason) showNotice(reason);
+      else hideNotice();
+      startElapsed();
+      if (pollTimer === null) {
+        pollTimer = setInterval(() => { void pollBoard(); }, POLL_INTERVAL_MS);
+        void pollBoard(); // 立即首询：以全量快照替换 tool-result 摘要，走秒/渲染即时可用
+      }
+    }
+    async function pollBoard() {
+      if (disposed || pollTimer === null || pollBusy) return;
+      pollBusy = true;
+      try {
+        const board = resourceBoardOf(await send("resources/read", { uri: BOARD_RESOURCE_URI }, true));
+        replaceJobs(board.jobs);
+        render();
+        renderTruncation(board); // 先 render 后截断声明（CH2 bootstrap 同序），否则计数行覆盖截断信息
+        hideNotice(); // 轮询成功： transient 错误提示清除（底部数据源声明保留）
+        startElapsed();
+      } catch (error) {
+        // 查询失败 ≠ 数据清空（与单卡同族）：保留已加载视图，提示后按周期重试。
+        showNotice(`资源轮询失败：${error.message}；约 2s 后重试，已加载数据保持展示。`);
+      } finally {
+        pollBusy = false;
+      }
+    }
+    function resourceBoardOf(result) {
+      const text = Array.isArray(result?.contents) ? result.contents[0]?.text : null;
+      if (typeof text !== "string") {
+        const error = new Error("资源响应不可用（缺少 JSON 文本）");
+        error.resourceChannelUnavailable = true;
+        throw error;
+      }
+      const board = JSON.parse(text);
+      if (board === null || typeof board !== "object" || !Array.isArray(board.jobs)) {
+        throw new Error("资源响应不可用（缺少 jobs 数组）");
+      }
+      return board;
+    }
+    // tool-result：render_board 的 structuredContent（jobs 摘要 + board_url + read_token）。
+    function onToolResult(structured) {
+      const payload = structured !== null && typeof structured === "object" ? structured : {};
+      replaceJobs(Array.isArray(payload.jobs) ? payload.jobs : []);
+      render();
+      const noticeText = typeof payload.notice === "string" && payload.notice.length > 0 ? payload.notice : null;
+      const token = typeof payload.read_token === "string" && payload.read_token.length > 0 ? payload.read_token : null;
+      const boardUrl = typeof payload.board_url === "string" && payload.board_url.length > 0 ? payload.board_url : null;
+      if (token !== null && boardUrl !== null) {
+        connectSse(boardUrl);
+        return;
+      }
+      if (noticeText !== null) showNotice(noticeText);
+      startPolling("未配置只读凭据，board_url 不可用");
+    }
+
+    function dispose() {
+      if (disposed) return;
+      disposed = true;
+      closeSource();
+      if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+      stopElapsed();
+      if (sizeObserver !== null) { sizeObserver.disconnect(); sizeObserver = null; }
+      if (sizeDebounce !== null) { clearTimeout(sizeDebounce); sizeDebounce = null; }
+      for (const item of pending.values()) { clearTimeout(item.timeout); item.reject(new Error("看板已卸载")); }
+      pending.clear();
+    }
+
+    function startWidget() {
+      window.addEventListener("message", (event) => {
+        if (disposed) return;
+        // 结构前置校验：只认来自 window.parent 的 jsonrpc 2.0 封套（UX1 同族收敛）。
+        if (event.source !== window.parent) return;
+        const packet = event.data;
+        if (!packet || typeof packet !== "object" || packet.jsonrpc !== "2.0") return;
+        if (pinnedOrigin === null) {
+          if (typeof event.origin === "string" && event.origin.length > 0) pinnedOrigin = event.origin;
+        } else if (event.origin !== pinnedOrigin) {
+          return; // 偏离首帧固定 origin 的消息：丢弃
+        }
+        if (Object.hasOwn(packet, "id") && pending.has(packet.id)) {
+          const item = pending.get(packet.id);
+          pending.delete(packet.id);
+          clearTimeout(item.timeout);
+          if (packet.error) item.reject(new Error(packet.error.message ?? "MCP Apps request failed"));
+          else item.resolve(packet.result);
+          return;
+        }
+        if (packet.method === "ui/notifications/tool-result") {
+          onToolResult(packet.params?.structuredContent ?? null);
+        } else if (packet.method === "ui/notifications/host-context-changed") {
+          applyHostContext(packet.params);
+        } else if (packet.method === "ui/resource-teardown" && Object.hasOwn(packet, "id")) {
+          dispose();
+          postToHost({ jsonrpc: "2.0", id: packet.id, result: {} });
+        }
+      });
+      send("ui/initialize", { appInfo: { name: "Dalizi Board", version: "1.0.0" }, appCapabilities: {}, protocolVersion: "2026-01-26" }, true)
+        .then((result) => {
+          if (disposed) return;
+          applyHostContext(result?.hostContext); // 首帧 hostContext 可能为空对象，空则 CSS 兜底
+          send("ui/notifications/initialized", {});
+          setConnection("等待看板数据…", "pending");
+        })
+        .catch((error) => {
+          if (disposed) return;
+          setConnection("初始化失败", "down");
+          showNotice(error.message);
+        });
+      watchSize();
+    }
+
+    // ---------- 浏览器态（CH2 原行为：present_files 打开，无 MCP 桥） ----------
+    async function bootstrap() {
+      if (disposed) return;
+      if (!readToken) {
+        setConnection("未认证", "down");
+        setChannel("GET /events（SSE 实时推送）");
+        showNotice("URL 缺少 read_token 查询参数，无法读取看板数据。");
+        return;
+      }
+      try {
+        const response = await fetch(`/api/jobs?read_token=${encodeURIComponent(readToken)}`, { headers: { accept: "application/json" } });
+        if (disposed) return;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const board = await response.json();
+        if (disposed) return;
+        for (const job of Array.isArray(board.jobs) ? board.jobs : []) {
+          if (job && typeof job.job_id === "string") jobs.set(job.job_id, job);
+        }
+        render();
+        renderTruncation(board);
+        connect();
+      } catch (error) {
+        if (disposed) return;
+        setConnection("加载失败", "down");
+        showNotice(`看板初载失败：${error.message}。请确认 read_token 有效后刷新页面。`);
+      }
+    }
+    // SSE（IMPLEMENTATION §9.2）：data 帧为 {"job_id","revision","snapshot"}，合并进本地视图；
+    // 注释心跳行由浏览器 EventSource 自动忽略。断线显示提示并自动重连。
+    function connect() {
+      source = new EventSource(`/events?read_token=${encodeURIComponent(readToken)}`);
+      setChannel("GET /events（SSE 实时推送）");
+      source.onopen = () => {
+        if (disposed) return;
+        setConnection("已连接", "completed");
+        hideNotice();
+      };
+      source.onmessage = (event) => {
+        if (disposed) return;
+        let frame;
+        try {
+          frame = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        const snapshot = frame !== null && typeof frame === "object" ? frame.snapshot : null;
+        if (!snapshot || typeof snapshot.job_id !== "string") return;
+        jobs.set(snapshot.job_id, snapshot);
+        render();
+      };
+      source.onerror = () => {
+        if (disposed) return;
+        setConnection("已断开", "down");
+        showNotice("实时连接断开，正在自动重连；初载数据保持展示。");
+        if (source.readyState === EventSource.CLOSED) {
+          source.close();
+          if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+        }
+      };
+      startElapsed();
+    }
+
+    window.addEventListener("pagehide", dispose);
+    if (window.parent === window) {
+      // 浏览器态（present_files 打开）：无 MCP 桥，token 取自 URL query，纯 SSE。
+      readToken = new URLSearchParams(location.search).get("read_token");
+      bootstrap();
+    } else {
+      // widget 态（MCP Apps 沙箱）：宿主握手 + 运行时双通道（SSE 优先，资源轮询兜底）。
+      startWidget();
+    }
+  </script>
+</body>
+</html>
