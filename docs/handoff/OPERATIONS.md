@@ -141,6 +141,24 @@ npm run resolve-recovery -- --job <job_id> --confirm --evidence "<证据摘要>"
 npm run register-project -- --alias <别名> --cwd <目录>
 ```
 
+### 3.6 P5 看板与只读端点（2026-10-05 上线）
+
+**MCP 侧**：新工具 `render_board`（无参数、只读）——返回全量非终态 + 最近终态窗口（50 条）聚合快照（`structuredContent.jobs / board_url / read_token`）。任务卡也升级：数据刷新走免授权 `dlz://job/{job_id}` 资源通道（无审批弹窗），走秒由前端本地计时（1s）。
+
+**浏览器看板（推荐展示通道）**：拿 `render_board` 返回的 `board_url`（含 `read_token` query 参数）用 `present_files` 打开，或直接在任何本机浏览器打开——SSE 实时推送，右上「已连接」徽章亮即走 SSE。聊天窗内 `render_board` 可能被 WorkBuddy 按原生工具 UI 展示（非 iframe 看板），属已知宿主行为，浏览器版为准。
+
+**HTTP 只读端点**（默认关闭，配置 `DISPATCHER_HTTP_READ_TOKEN` 后启用；独立于主 Bearer，query 参数 `read_token` 携带）：
+
+| 端点 | 用途 |
+|---|---|
+| `GET /api/jobs?read_token=…` | 聚合快照 JSON（同 render_board 载荷） |
+| `GET /events?read_token=…` | SSE 实时流（1s diff + 15s 心跳） |
+| `GET /board?read_token=…` | 看板静态页 |
+
+**凭据纪律**：read token 存 `dalizihub-bridge\secrets\dispatcher-http-read-token.txt`（bridge Start 脚本注入，与主 Bearer 同款文件化模式）；只在已认证的 `render_board` 调用中动态下发，**禁止写入仓库任何文件/日志/静态资源**。错 token=401，未配置=端点整体 404（默认安全）。
+
+**P5 上线实证**：两次看门狗舞蹈切换（初部署 10-04 22:41 PID 22596 → listAll 修复 10-05 12:45 PID 17168）；canary 真实派工端到端 PASS（marker 匹配、COMPLETED、零泄漏、源码指纹不变）；live 三连 A9/A10 PASS、A11 浏览器通道 PASS。证据：`.workbuddy/memory/2026-10-04.md`、`2026-10-05.md`、`D:\3-huancun\p5-*` 日志族。
+
 ---
 
 ## 4. 日常维护

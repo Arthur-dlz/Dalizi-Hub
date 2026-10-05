@@ -1,7 +1,7 @@
 # V1 实现技术文档（IMPLEMENTATION）
 
-日期：2026-09-29。状态：待施工。
-对应蓝图：`docs/v1-mcp-agent-dispatch-blueprint.md` v1.2，SHA256 `048BB68F72B62471E7D624AFE979B8CBCD96D812B6872950410D52E421C01662`。
+日期：2026-09-29；2026-10-04 增补 §9（P5 表面，对应蓝图 v1.3）。状态：V1 已收官（A1–A8 全绿，全量测试 176/176）；P5 新增表面待 CH1–CH3/OPS3 施工。
+对应蓝图：`docs/v1-mcp-agent-dispatch-blueprint.md` v1.3，SHA256 `019B3DFCB4424AAB20CCBA8BE2BD71E9D450F0C2AF5EB777421A6D9574FA5F8E`（2026-10-05 P5 收官标记后重锁；口径：LF 行尾的蓝图全文除去文末 SHA256 记录行，与该行记录同值）。v1.3 初锁 `A9F16789…9969`；v1.2 旧锁 `048BB68F…C01662` 对应 41a5b8b 版蓝图；0ecc963 收官修订蓝图 §11 时未刷新该锁，v1.3 起以本锁为准。
 需求以蓝图为唯一来源；本文只做"蓝图 → 代码"的实现映射，不复制需求、不新增需求。若本文与蓝图冲突，以蓝图为准并修正本文。
 
 ## 1. 文档关系与执行模型
@@ -201,3 +201,43 @@ postMessage 目标 origin 不用 `'*'`：P0 查明宿主 origin 后写死白名�
 ## 8. 明确不做（照蓝图，复述仅为执行边界）
 
 多任务队列/并行编排、会话续接、取消/审批产品、自动重试、历史分析、计费、worker/critic、自动 Git 操作、其他客户端接入实现、单实例内并发（需求级变更须用户显式批准）。
+
+## 9. P5 数据通道与看板表面（对应蓝图 v1.3 §12）
+
+本节为蓝图 v1.3 §12 的"蓝图 → 代码"实现映射，不新增需求；与 V1 各章的冲突检查见 §9.5（结论：无冲突，无需回改）。施工卡与依赖见 `docs/impl/P5-upgrade-plan.md` §4（DOCS2 前置已完工 → CH1 → CH2 → CH3 → OPS3）；对应验收项 A9–A11（蓝图 §10，live 目视项挂 HUMAN）。
+
+### 9.1 资源注册：dlz://job/{job_id} 与 dlz://board（CH1/CH3）
+
+- `src/mcp-server.js` 以官方 SDK v2 的 `ResourceTemplate` 注册资源模板 `dlz://job/{job_id}`（list 回调枚举当前已知 job；read 回调按 job_id 取持久快照）；`dlz://board` 为静态 URI 资源，read 回调返回聚合视图。
+- 载荷：`dlz://job/{job_id}` 返回该 job 的 TaskSnapshot（与 `get_task` 的 `structuredContent` 同形，字段见 §3.1）；`dlz://board` 返回 `{jobs, truncated, total}`——`jobs` 为快照数组（项与 job 资源同形），`truncated` 为是否截断，`total` 为未截断全量条数。
+- board 边界常量（实现声明值，调值属实现细节、不改需求）：终态窗口 50 条（按 `finished_at` 降序取最近）；响应字节上限 1 MiB；非终态全量优先入数组，超限按同序截断并置 `truncated=true`。
+- 卡片轮询迁移（CH1）：`src/task-card.html` 优先 `app.readServerResource("dlz://job/<job_id>")`（免授权只读 GET）；宿主抛错/不支持时回退现有 `tools/call get_task` 桥；回退路径保留 A1/A7 既有行为与断言。
+- `render_board` 的 `structuredContent.jobs` 为 board 摘要数组（与 board 资源同源的紧凑投影），摘要字段：`{job_id, status, project, agent, created_at, updated_at, revision}`。
+
+### 9.2 SSE：GET /events（CH2）
+
+- `src/http-mcp-server.js` 路由由单路径（非 `/mcp` 即 404）扩为白名单式：`/mcp`（原 bearer 认证不变）+ `/api/jobs`、`/events`、`/board`（只读，认证见 §9.3）；其余路径维持 404。
+- 数据源：`JobStore`（`listAll()` / `listNonTerminal()` 已有）；board 与 `/api/jobs` 视图按 §9.1 边界常量裁剪。
+- 推送：服务端每 1s 轮询 store，逐 job 比对 `revision`，有变化者以 SSE `data:` 行推送 `{"job_id","revision","snapshot"}`；无变化不推。
+- 心跳：每 15s 发送 SSE 注释行（如 `: hb <iso>`）保活，防中间层静默断链。
+- 连接清理：`req.on("close")` 摘除该连接的轮询引用与响应写入口；无客户端即无轮询，防定时器/引用泄漏。响应头 `Content-Type: text/event-stream`、`Cache-Control: no-cache`。
+
+### 9.3 只读 token 模型（CH2，D1 拍板）
+
+- 环境变量 `DISPATCHER_HTTP_READ_TOKEN`：独立凭据，≥32 字符高熵；与 MCP bearer 不同源；**不进 git、不进快照、不进任何静态 UI 资源、不进日志**；未配置时 §9.2 三个只读路径一律 404（默认关闭），由运维在 OPS3 阶段配置后生效。
+- 校验顺序：query param `read_token` 存在 → 与服务端值以 `crypto.timingSafeEqual` 定长比较（先比长度，不等长直接拒，防抛异常）；否则 `Authorization: Bearer <主 bearer>` 按现有逻辑校验通过亦放行只读访问；均不满足返回 401。未配置与凭据错误对调用方呈现不同状态码，但不泄露路径存在性之外的细节。
+- `render_board` 的 `structuredContent.read_token` 与 `board_url` 所带 query param 即该值，经已认证 MCP 工具调用动态下发（蓝图 §12.3）；`board.html` 从自身 URL query 取 token 供 `/api/jobs`、`/events` 复用；静态 HTML 不内置任何凭据。
+- MCP 入口（`/mcp`，POST）的认证、loopback、Origin 与 body 限制零改动。
+
+### 9.4 board 页双挂载（CH2/CH3）
+
+- `src/board.html`（CH2 新文件，静态页归 CH2 单写者）：数据 = `GET /api/jobs`（初载）+ `GET /events`（SSE 实时）；token 取自页面 URL query。
+- 挂载一：MCP Apps iframe——`render_board` 的 `_meta.ui.resourceUri` 指向 board UI 资源；受 widget CSP 管辖，`connectDomains` 申报 `http://127.0.0.1:18490`（蓝图 §12.5）后才可直连本地端点；SSE 不可达时 CH3 运行时双通道降级为 `dlz://board` 轮询（LV2/A11，功能不缺失）。
+- 挂载二：`present_files` 内置浏览器——URL `http://127.0.0.1:18490/board?read_token=…`，**必须 `127.0.0.1` 不用 `localhost`**（IPv6 假 404 风险）；不受 widget CSP 管辖，SSE 原生可用；WB Bash 沙箱 curl 不可达属已知宿主行为，不改变该路径结论。
+
+### 9.5 与 V1 各章冲突检查（结论：无冲突）
+
+- §4 工具契约：`dispatch_task`/`get_task`/`render_task_card` 输入输出与快照语义不变；`render_board` 为新增只读工具；request_id 幂等机制不扩展至只读路径。
+- §8 安全与权限：只读端点无写路径；loopback/Origin/body 限制保留；只读 token 是二级凭据，不替代、不削弱主 bearer；"卡片不直连"规则（§8）仅对 board widget 按蓝图 §12.5 白名单有限放开且只读。
+- §3 数据格式：快照 schema 无字段变更；board 聚合为既有 TaskSnapshot 的有界投影。
+- §11 演进项：P2 六项按 D4 拍板只登记于蓝图 §11（另立 P6 评估），本文不施工、不列入任何 P5 卡承诺。

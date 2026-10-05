@@ -61,7 +61,8 @@ a malformed roots file fails closed. These local files are gitignored; do not
 commit local paths. MCP exposes no registry-mutation tool or cwd/root/path input.
 The WorkBuddy model allowlist contains the
 dynamically verified `custom-local:step-5-preview` only. The separate Codex
-allowlist contains the locally verified `gpt-6-sol` only. Antigravity has its own
+allowlist contains the locally verified `gpt-6-sol`, `gpt-6.1-sol`, and
+`gpt-6-luna`. Antigravity has its own
 verified model allowlist (Gemini / Claude / gpt-oss tiers) in `src/mcp-server.js`.
 
 ## Task Card UI
@@ -70,10 +71,23 @@ verified model allowlist (Gemini / Claude / gpt-oss tiers) in `src/mcp-server.js
 (`text/html;profile=mcp-app`, self-contained, no external assets) straight from the
 persisted Dispatcher job: agent, project, status, elapsed time, current activity,
 requested model, effort, last update, and the result (`error` first, then
-`final_text`). The card refreshes only through `get_task(job_id)` every ~3 seconds
-while the job is non-terminal, and stops immediately on `COMPLETED`, `FAILED`, or
-`CANCELLED`. It keeps a single interval, guards concurrent refreshes, and cleans
-up on teardown. This transport is shared by the stdio and HTTP entry points.
+`final_text`). P5 (2026-10-05): the card refreshes data through the
+**authorization-free `app.readServerResource` channel** (`dlz://job/{job_id}`,
+falling back to `get_task` when the host lacks the capability), while **elapsed
+time ticks locally every second** (decoupled from data polling). The card follows
+host theme changes (`host-context-changed`), reports its size to avoid inline
+clipping, and keeps the user-only auto-refresh semantics on terminal stop.
+This transport is shared by the stdio and HTTP entry points.
+
+`render_board` (P5, no arguments, read-only) returns an aggregate snapshot of all
+non-terminal jobs plus a bounded newest-terminal window
+(`structuredContent.jobs / board_url / read_token`), and points the host at the
+board UI resource `ui://dalizi-dispatcher/board.html` (CSP `connectDomains`
+allows exactly `http://127.0.0.1:18490`). Opening `board_url` in a browser
+(e.g. via `present_files`) renders the same board over **SSE** (`GET /events`).
+Note (2026-10-05 live): WorkBuddy Desktop may render `render_board` results with
+its native tool UI instead of the MCP App iframe; the browser board is the
+verified display path.
 
 ## Boundaries
 
@@ -94,6 +108,14 @@ npm run start:http
 Clients send `Authorization: Bearer <token>`. Requests without a valid token or
 with a foreign Origin are rejected before they reach MCP. The HTTP entry never
 reads `CONTROL_PLANE_API_KEY`, WorkBuddy credentials, cookies, or storage.
+
+P5 read-only data plane (2026-10-05): `GET /api/jobs`, `GET /events` (SSE),
+`GET /board` are disabled by default and enabled by a **separate** read-only
+credential `DISPATCHER_HTTP_READ_TOKEN` (at least 32 characters, passed via the
+`read_token` query parameter; `timingSafeEqual` checked; the main Bearer header is
+also accepted). `render_board` hands `board_url` with the token to authenticated
+MCP clients only — the token is never embedded in static resources or logs.
+All other paths keep returning 404.
 
 ## Production run
 

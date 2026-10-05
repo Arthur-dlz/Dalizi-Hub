@@ -5,6 +5,8 @@
 > 修订 v1.1（2026-09-29）：依据同日只读对抗审核（Matt code-review 双轴适配法，单审查进程）关闭 7 项发现：RECOVERY_REQUIRED 出边与占用释放（§7、§10）、幂等命名空间声明（§4）、request_id 索引形态与增长策略（§4）、AGY 权限决策关卡归属（§10）、卡片 postMessage 收敛（§2、§8）、CANCELLED 取舍声明（§5）、快照字段现状修正（§2、§4）；另修正 AGY cache 样例证据强度（§5）、补充多实例部署拓扑（§11）。施工任务卡按同日用户指令置于 docs/impl/。
 >
 > 修订 v1.2（2026-09-29）：依据同日二轮对抗审查修订——限缩“自动路径永不释放”为仅身份未知/未确认终止的占用（§7）；resolve-recovery 增加实例锁前置（§7）；索引启动恒对账重建（§4）；实例锁 stale 判定与接管（§7，实现细节见 IMPLEMENTATION）；幂等命名空间作用域明确为每状态目录（§4、§11）；修正 §2 行号锚点；备案 GPT 分层架构建议为 V1 后演进参考（§11）。
+>
+> 修订 v1.3（2026-10-04）：依据 `docs/impl/P5-upgrade-plan.md`（D0 已拍板：D1 只读 token 模型 / D2 render_board 进工具面 / D3 蓝图 v1.3 / D4 P2 只登记）与 `docs/research/2026-10-03-workbuddy-native-and-zcode-workflow.md` 增补：新增 §12（P5 卡片与数据通道演进表面：`dlz://job/{job_id}` 与 `dlz://board` 只读资源、`render_board` 工具、HTTP 只读端点族与只读 token 模型、connectDomains 白名单演进、A9–A11 验收项），§11 登记 P2 调度语义演进项 6 条（另立 P6 评估）。**纯新增修订：V1 已验收条目（§4 工具契约、§5–§8 与 A1–A8）语义零改动，diff 级自证。** 本版内容 SHA256 记录于文末（口径见该行），IMPLEMENTATION.md 头部同步引用同值。
 
 本文记录用户已确认的需求及建议实现。采用 ASK-DLZ 控制范围，以 spec-driven-development 整理规格、codebase-design 划分模块接口。实施阶段安排包含在本文；实现技术文档与施工任务卡按 2026-09-29 用户指令置于 docs/impl/（IMPLEMENTATION.md 与 cards/），不执行提交、服务启停或 agent 作业。
 
@@ -216,6 +218,9 @@ RECOVERY_REQUIRED 出边与占用释放（v1.1 新增，v1.2 修订）：V1 提�
 | A6 可信恢复 | spawn 前后窗口、PID 复用、未知身份、子进程存活、缺结果均正确区分；未知占用不释放；人工解除路径须有确认标记与证据摘要才释放占用，并留审计记录 | 可控进程身份与持久记录 fixture，必要 Windows 实测；resolve-recovery 操作审计记录 |
 | A7 刷新稳健 | 错误保留旧快照并可重试；旧 revision/其他 job 响应不覆盖；结束后仍可手动刷新；用户关闭自动刷新后，手动刷新及后续非终态快照均保持开关关闭，不重建自动刷新定时器 | UI 行为测试 + Desktop 重连/刷新实测；显式测试关闭自动刷新→手动刷新→收到 RUNNING 快照，断言开关仍关闭且没有周期查询 |
 | A8 完整链路 | Desktop→隧道→Dispatcher→目标 CLI→卡片结果；能从 Dispatcher 检查同一结果；无越界改动 | 每个启用 CLI 的受控 job、路径/版本/结果及项目检查 |
+| A9 P5 卡片视觉与走秒 | Desktop 内 P5 卡片视觉（进度条/徽章/宿主主题热更）与走秒本地计时正确，size-changed 上报不截断 | Desktop live 操作记录（挂 HUMAN 目视，不阻塞施工） |
+| A10 resources/read 轮询 | widget 经 `dlz://job/{job_id}` 免授权轮询生效（无审批弹窗）；宿主不支持时按已声明降级路径（tools/call 回退）工作 | live 操作记录（LV1）+ 降级路径声明 |
+| A11 SSE/board live 或降级声明 | SSE 在 board widget CSP 下可达且 board 页正常刷新；不通过则按声明的降级通道（`dlz://board` 轮询）交付并记录缺口 | live 操作记录（LV2）+ 降级通道声明 |
 
 验证命令在仓库根目录执行：`npm test`（实际为 node --test）。仅在相应运行授权和独立 canary 项目准备好后使用 `npm run canary`、`npm run canary:antigravity`、`npm run canary:http`；这些命令会派发真实工作，不是只读检查，也不自动证明 Desktop 路径。启动入口 `npm start` / `npm run start:http` 同样不在本次执行范围。不存在已核实的 build/lint gate，不能编造命令。
 
@@ -225,10 +230,55 @@ RECOVERY_REQUIRED 出边与占用释放（v1.1 新增，v1.2 修订）：V1 提�
 
 **V1 整体收官（2026-10-01）**：A1–A8 全部验证通过——A1 Desktop 卡片渲染与刷新原位更新经用户目视确认（09-30 V0 卡渲染 + 10-01 新卡缩略/展开/刷新保持）；A2–A8 证据见 `docs/impl/e2e-evidence/T5-canary-evidence.md`、`.workbuddy/memory/2026-09-30.md` 与 `2026-10-01.md`、`docs/impl/COMMANDER-RUNBOOK.md` 卡表。生产在跑（dispatcher `127.0.0.1:18490`，bridge 托管，看门狗守护）；codex 使用 standalone 固定路径。全量测试 176/176。
 
+**P5 收官（2026-10-05，OPS3 部署后）**：UX1/DOCS2/CH1/CH2/CH3 五卡施工全 PASS（指挥窗口 2026-10-04 完成，主控独立核验）；生产经看门狗舞蹈两次切换跑 P5 代码（初部署 + listAll 运营文件误吞修复，最终 PID 见当日日志），全量测试 206/206。live 验收：**A9 PASS**（新卡片视觉/走秒/主题热更/不截断，用户目视）；**A10 PASS**（卡片轮询走 `app.readServerResource` 免授权通道，目视无审批弹窗，LV1 确证）；**A11 PASS（浏览器通道）**——present_files 打开的 board 页右上「已连接」徽章确证 SSE 直连（LV2 服务端侧确证），三列分组/终态窗口 50 条满额正常。遗留：render_board 在 WB 聊天窗未以 MCP Apps iframe 渲染（宿主按原生工具 UI 展示 structuredContent），widget 侧 SSE-over-CSP（LV2 widget 侧）无结论，列为后续观察项（不阻塞，浏览器版为推荐展示通道）。P5 期间额外修复：`listAll` 对同目录运营文件（project-registry/workspace-roots）的误吞（V1 遗留宽松 pattern，live 暴露，回归测试在档）。生产运行证据、canary（真实派工 marker 匹配 COMPLETED）与端点矩阵见 `.workbuddy/memory/2026-10-04.md`/`2026-10-05.md` 与 `D:\3-huancun\p5-*` 日志族。
+
 收官后未决项（均非 V1 完成条件，不阻塞收官）：dalizihub-bridge 独立版本化；agy `wall_duration_ms` 的 live 复验（修复已经单测覆盖，随下次 agy canary 顺带确认）；其他 MCP 客户端的实际传输、认证与展示兼容性留待未来接入验证，不得提前宣称已支持。standalone 与桌面版 codex 共享 `~/.codex`（CODEX_HOME），维持现状，如需隔离另行决策。
 
 部署拓扑（v1.1，源自 2026-09-29 用户补充的实际工作流）：用户常态为多项目双开/三开并行、各窗口自带并发子进程。V1 维持单实例单任务执行；多项目并发由每项目独立状态目录的独立 Dispatcher 实例承载（实例锁按状态目录隔离，实例互不知晓，各自遵循 busy 拒绝语义；幂等命名空间同为每状态目录作用域，见 §4）。单实例内的并发/排队仍是确认范围外项；如未来需要，属需求级变更，须用户显式批准后另行修订本节与 §4/§7。
 
 架构演进备注（v1.2，源自同日 GPT 分层架构建议的评估）：建议核心为 interfaces(mcp/cli/api) + executors(local-shell/coding-agent/remote-shell) + targets(local/ssh) + providers(per-CLI) 分层与 hub 式多客户端服务（DLZ Hub Server API：WorkBuddy/Codex/Kimi/ChatGPT 经隧道接入）。评估结论：其长期方向与 §1 客户端中立目标一致；providers 层 ≈ 本设计 Runner Adapter 边界（厂商差异已隔离在 adapter，核心调度无厂商逻辑）；cli/api 接口、local-shell/remote-shell 执行器、ssh 目标、Kimi provider、多客户端接入实现均为已确认的 V1 非目标，V1 不按其骨架施工，留作 V1 后演进参考。P2 可择机将 runner 注册组织为 provider registry（代码组织层，不改变工具契约）。
 
+P2 调度语义演进项（v1.3 登记，2026-10-04；依据调研 §5 P2-1~P2-6 与 P5-upgrade-plan §6）：① phase 里程碑计数（任务可声明 phase 列表，快照透出每 phase 完成度）；② `report()` 中间结果透出（CLI runner 中间事件进入快照，失败也带出）；③ 结果契约四字段（conclusion/findings/verified/notCovered 结构化分层）；④ 子任务粒度增量重跑（失败重试短路已完成部分）；⑤ 人工介入状态位 + `sendMessage('fill')` 预填输入框；⑥ 并发槽位自适应（限流/过载退避）。六项均触 dispatcher 核心与快照 schema，**本轮只登记、不施工，另立 P6 评估**；不动 V1/P5 基线，不构成任何已承诺施工项。
+
 若某指标源端确实不提供，正确显示“不可观测”满足本规格的诚实展示要求，但不得宣传该指标已测量；若 Desktop 无手动按钮刷新能力，则 A1 未通过，外部页面或聊天轮询不能代替。没有用户明确变更或豁免时保留该验收项。
+
+## 12. P5 卡片与数据通道演进表面（v1.3 新增，2026-10-04）
+
+引入依据：`docs/impl/P5-upgrade-plan.md`（2026-10-04 D0 已拍板）与 `docs/research/2026-10-03-workbuddy-native-and-zcode-workflow.md`（宿主边界 B1–B3：宿主不推数据、`resources/read` 免授权而 `tools/call` 每次弹窗审批、connectDomains 默认全断）。施工分期见 P5-upgrade-plan §4（UX1 → CH1/CH2 → CH3 → OPS3，本文前置）。**本节为纯新增：V1 已验收条目（§4 工具契约、§5–§8、A1–A8）语义零改动；P5 表面不得削弱、绕开或替代任一 V1 已确认行为。**
+
+### 12.1 只读资源 dlz://job/{job_id}
+
+- 资源模板 `dlz://job/{job_id}`，MIME `application/json`，只读。
+- 载荷与 `get_task` 的 `structuredContent` 同形（同一 TaskSnapshot 视图，字段以现有快照契约为准）。
+- 用途：MCP Apps widget 经 `resources/read`（免授权只读 GET）轮询，取代现每 3s 反向 `tools/call` 踩审批通道；宿主不支持该通道时保留现有 `tools/call get_task` 回退，A1/A7 既有行为不变。
+- 资源不启动、不恢复执行；未知/缺失 job 报资源不存在，不返回伪造空快照；`get_task/job_id` 关联不是额外授权（§8 不变）。
+
+### 12.2 只读资源 dlz://board
+
+- 资源 `dlz://board`（无参数），MIME `application/json`，只读；载荷为聚合快照数组（附截断元数据）。
+- 覆盖范围：非终态 job 全量 + 有界终态窗口；条数上限、字节上限与截断规则为实现声明的常量——超限时按声明序截断，保留总数计数与截断标记，不静默丢弃。
+- 数组项与 `dlz://job/{job_id}` 同形；顺序确定：非终态在前，终态按完成时间降序。
+
+### 12.3 工具 render_board（D2）
+
+- 新增只读 MCP 工具 `render_board`：`readOnlyHint` 为真；经 `_meta.ui.resourceUri` 绑定 board UI 资源（与 render_task_card 同族 `ui://` HTML 资源）；不派发、不修改任何 job。
+- `structuredContent` 契约：`{jobs, board_url, read_token}`——`jobs` 为 board 摘要数组（与 `dlz://board` 同源的紧凑投影）；`board_url` 为 HTTP board 页地址（只读凭据经 query param 携带）；`read_token` 为只读凭据明文。
+- `read_token` 只经本已认证工具调用动态下发，**不得嵌入任何静态 UI 资源或资源模板**（静态资源可被任意客户端读取）。未配置只读凭据时 `board_url` 对应路径不存在（404），`structuredContent` 不得包含可用凭据。
+- `render_board` 不替代 `render_task_card`：单 job 上下文卡仍走 `render_task_card`（§4 不动）。
+
+### 12.4 HTTP 只读端点族（D1）
+
+- 新增仅 GET 只读路径三个：`GET /api/jobs`（JSON 聚合，与 `dlz://board` 同源同界）、`GET /events`（SSE：revision 变化 diff 推送 + 周期心跳）、`GET /board`（静态 HTML 页）。
+- 认证（D1 拍板模型）：独立只读 token（环境变量 `DISPATCHER_HTTP_READ_TOKEN`，≥32 字符、与 MCP bearer 不同源的独立凭据、不进 git）经 query param `read_token` 传递，服务端以 `timingSafeEqual` 定长比较校验；现 MCP 主 bearer（Authorization 头）亦接受为只读访问。凭据缺失或错误返回 401。
+- 默认关闭：未配置只读 token 时三路径一律 404；配置后**仅**这三个只读路径放行，其余路径维持现状——非 `/mcp` 即 404，原 bearer 认证、loopback、Origin 与 body 限制不变；不新增任何写路径，不降低 MCP 入口安全姿势。
+- SSE 属浏览器侧通道：widget 内经 connectDomains 申报的可达性以 live 验证为准（A11），不通过时降级 §12.1/12.2 轮询，功能不缺失。
+
+### 12.5 connectDomains 白名单演进
+
+- board widget 需要直连本地端点时，其 `_meta.ui.csp.connectDomains` 申报 `http://127.0.0.1:18490`（生产端口；必须 `127.0.0.1`，不用 `localhost`，避免 IPv6 假 404）。仅 board 相关资源申报；task-card 资源维持现有声明不变，不因 P5 扩大白名单。
+
+### 12.6 验收项新增
+
+A9–A11 已入 §10 验收表：A9 P5 卡片视觉与走秒 live；A10 `resources/read` 轮询 live；A11 SSE/board live 或降级通道声明。三者均为 live 目视项、挂 HUMAN；不通过时按对应表面已声明的降级路径交付并记录缺口，不构成 V1 回归。
+
+> SHA256（v1.3 内容锁；口径：LF 行尾的全文除去本行；复算命令 `head -n -1 docs/v1-mcp-agent-dispatch-blueprint.md | sha256sum`；IMPLEMENTATION.md 头部引用同值）：`019B3DFCB4424AAB20CCBA8BE2BD71E9D450F0C2AF5EB777421A6D9574FA5F8E`（2026-10-05 P5 收官标记后重锁；前值 `A9F16789…9969` 为 v1.3 初锁）
